@@ -1,20 +1,37 @@
 # schema-sync 配置示例（复制为 config.yaml 后按需修改）
-# 密码请在 Web 页面录入，落盘后会加密为 enc:v1: 密文
+# 密码请在 Web 页面录入，落盘后会加密为 enc:v1: 密文；勿在此填写真实密码
 
 instances:
   - id: main
     host: 127.0.0.1
     port: 3306
     user: root
-    password: ""  # 请在页面录入
+    password: ""
     enabled: true
-    remark: 本地开发库
+    remark: 主库
+
+  - id: shard-a
+    host: 127.0.0.1
+    port: 3307
+    user: root
+    password: ""
+    enabled: true
+    remark: 分片 A（示例）
 
 table_groups:
-  - id: demo
-    database_pattern: "mydb_*"
+  - id: order
+    database_pattern: "order_*_*"
     tables:
-      - users
-      - orders
+      - order
+      - order_item
+    instance_ids:
+      - main
+      - shard-a
+
+  - id: product
+    database_pattern: "product_*"
+    tables:
+      - product
+      - product_sku
     instance_ids:
       - main
