@@ -2,6 +2,7 @@
 config.yaml
 __pycache__/
 *.pyc
+*.egg-info/
 .venv/
 backend/.venv/
 frontend/node_modules/
