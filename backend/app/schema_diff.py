@@ -29,8 +29,13 @@ def _item(
     name: str,
     title: str,
     sql: str,
+    as_replacement: bool = False,
 ) -> DiffItem:
-    risk = _risk_for(kind)
+    # 替换对中的 add 半边标 caution，避免默认勾选造成半改
+    if as_replacement and kind == "add_index":
+        risk: RiskLevel = "caution"
+    else:
+        risk = _risk_for(kind)
     return DiffItem(
         id=make_diff_id(instance_id, database, table, kind, name),
         kind=kind,
@@ -183,6 +188,7 @@ def diff_table(
                 name=tmpl_pk.name or "PRIMARY",
                 title=f"新增主键 {table}",
                 sql=sql_gen.add_index_sql(table, tmpl_pk),
+                as_replacement=True,
             )
         )
 
@@ -224,6 +230,7 @@ def diff_table(
                     name=name,
                     title=f"新增索引 {table}.{name}",
                     sql=sql_gen.add_index_sql(table, idx),
+                    as_replacement=True,
                 )
             )
 
