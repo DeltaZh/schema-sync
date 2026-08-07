@@ -43,6 +43,9 @@ def create_instance(
     body: InstanceWrite,
     store: Annotated[ConfigStore, Depends(get_store)],
 ) -> dict:
+    config = store.load()
+    if any(i.id == body.id for i in config.instances):
+        raise HTTPException(status_code=409, detail=f"实例已存在：{body.id}")
     plaintext = body.password if body.password is not None else ""
     inst = InstanceConfig(
         id=body.id,

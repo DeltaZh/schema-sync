@@ -127,6 +127,66 @@ def test_put_null_password_keeps_existing(tmp_path: Path):
     assert crypto.decrypt(store.load().instances[0].password) == "original"
 
 
+def test_post_duplicate_id_returns_409(tmp_path: Path):
+    from app.main import create_app
+
+    app = create_app(root=tmp_path)
+    client = TestClient(app)
+    payload = {
+        "id": "main",
+        "host": "127.0.0.1",
+        "port": 3306,
+        "user": "root",
+        "password": "s3cret",
+        "remark": "",
+        "enabled": True,
+    }
+    assert client.post("/api/instances", json=payload).status_code == 200
+    resp = client.post("/api/instances", json=payload)
+    assert resp.status_code == 409
+    assert "main" in resp.json()["detail"]
+
+
+def test_post_duplicate_id_cannot_clear_password(tmp_path: Path):
+    from app.crypto import PasswordCrypto
+    from app.config_store import ConfigStore
+    from app.main import create_app
+
+    app = create_app(root=tmp_path)
+    client = TestClient(app)
+
+    client.post(
+        "/api/instances",
+        json={
+            "id": "main",
+            "host": "127.0.0.1",
+            "port": 3306,
+            "user": "root",
+            "password": "keep-me",
+            "remark": "",
+            "enabled": True,
+        },
+    )
+
+    resp = client.post(
+        "/api/instances",
+        json={
+            "id": "main",
+            "host": "127.0.0.1",
+            "port": 3306,
+            "user": "root",
+            "password": None,
+            "remark": "",
+            "enabled": True,
+        },
+    )
+    assert resp.status_code == 409
+
+    crypto = PasswordCrypto.load_or_create(tmp_path / ".schema-sync.key")
+    store = ConfigStore(tmp_path / "config.yaml", crypto)
+    assert crypto.decrypt(store.load().instances[0].password) == "keep-me"
+
+
 def test_delete_instance(tmp_path: Path):
     from app.main import create_app
 
