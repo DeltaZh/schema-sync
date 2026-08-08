@@ -11,6 +11,8 @@ export interface ConnectionConfig {
   password: string;
   enabled: boolean;
   remark: string;
+  /** 连接树可见库白名单；空表示尚未选择，不展示/加载库 */
+  visible_databases: string[];
 }
 
 export interface NamingRule {

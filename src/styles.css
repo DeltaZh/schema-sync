@@ -348,6 +348,28 @@ button:disabled {
   margin-top: 14px;
 }
 
+.picker-list {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--bg);
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.picker-item:hover {
+  background: var(--row-hover, rgba(127, 127, 127, 0.12));
+}
+
 .chip-row {
   display: flex;
   flex-wrap: wrap;

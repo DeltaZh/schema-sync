@@ -239,6 +239,7 @@ mod tests {
             password: "secret".into(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         }];
         cfg.rules = vec![NamingRule {
             id: "r1".into(),
@@ -353,6 +354,7 @@ mod tests {
             password: "other".into(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         };
         let from_snap = frozen.to_connection_config("c1");
         assert_ne!(from_snap.host, live_looks_different.host);

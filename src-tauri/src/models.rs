@@ -25,6 +25,9 @@ pub struct ConnectionConfig {
     pub enabled: bool,
     #[serde(default)]
     pub remark: String,
+    /// 连接树中允许展示/加载的库名白名单；空表示尚未配置，树不自动拉全库
+    #[serde(default)]
+    pub visible_databases: Vec<String>,
 }
 
 fn default_true() -> bool {

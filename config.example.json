@@ -8,7 +8,8 @@
       "user": "root",
       "password": "",
       "enabled": true,
-      "remark": "示例连接：请在应用内填写密码；保存后落盘为密文，勿提交真实密钥"
+      "remark": "示例连接：请在应用内填写密码；保存后落盘为密文，勿提交真实密钥",
+      "visible_databases": ["account_demo", "order_demo_2025"]
     }
   ],
   "rules": [

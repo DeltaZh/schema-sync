@@ -233,6 +233,7 @@ mod tests {
             password: String::new(),
             enabled,
             remark: String::new(),
+            visible_databases: Vec::new(),
         }
     }
 

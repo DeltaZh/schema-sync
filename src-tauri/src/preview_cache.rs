@@ -47,6 +47,7 @@ impl FrozenConnection {
             password: self.password.clone(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         }
     }
 }
@@ -126,6 +127,7 @@ mod tests {
             password: "enc:v1:abc".into(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         };
         let frozen = FrozenConnection::from_config(&cfg);
         let restored = frozen.to_connection_config("c1");

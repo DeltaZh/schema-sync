@@ -34,8 +34,21 @@ export function pingConnection(id: string): Promise<void> {
   return invoke("ping_connection", { id });
 }
 
+export function setVisibleDatabases(
+  id: string,
+  databases: string[],
+): Promise<ConnectionConfig> {
+  return invoke("set_visible_databases", { id, databases });
+}
+
+/** 树展示用：仅返回已选可见库 */
 export function listDatabases(connectionId: string): Promise<string[]> {
   return invoke("list_databases", { connectionId });
+}
+
+/** 选择对话框用：服务器上全部业务库 */
+export function listAllDatabases(connectionId: string): Promise<string[]> {
+  return invoke("list_all_databases", { connectionId });
 }
 
 export function listTables(

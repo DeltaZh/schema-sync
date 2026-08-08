@@ -39,7 +39,39 @@ pub fn upsert_connection(
     }
 
     state.store.save(config.clone()).map_err(|e| e.to_string())?;
-    Ok(connection.public_view())
+    // 回读落盘结果，保证内存中为密文，与磁盘一致
+    *config = state.store.load().map_err(|e| e.to_string())?;
+    let saved = find_connection(&config, &connection.id)?.clone();
+    Ok(saved.public_view())
+}
+
+/// 设置连接树可见库白名单（空列表表示尚未选择，树不展示库）
+#[tauri::command]
+pub fn set_visible_databases(
+    state: State<'_, AppState>,
+    id: String,
+    databases: Vec<String>,
+) -> Result<ConnectionConfig, String> {
+    let mut config = state.config.lock().map_err(|e| e.to_string())?;
+    let conn = config
+        .connections
+        .iter_mut()
+        .find(|c| c.id == id)
+        .ok_or_else(|| format!("未知连接: {id}"))?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut cleaned = Vec::new();
+    for name in databases {
+        let name = name.trim().to_string();
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        cleaned.push(name);
+    }
+    cleaned.sort();
+    conn.visible_databases = cleaned;
+    state.store.save(config.clone()).map_err(|e| e.to_string())?;
+    *config = state.store.load().map_err(|e| e.to_string())?;
+    Ok(find_connection(&config, &id)?.public_view())
 }
 
 #[tauri::command]
@@ -84,6 +116,7 @@ mod tests {
             password: password.into(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         }
     }
 

@@ -117,6 +117,7 @@ mod tests {
             password: password.into(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         }
     }
 

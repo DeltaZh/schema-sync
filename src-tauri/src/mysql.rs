@@ -69,7 +69,14 @@ pub async fn execute_sql(
     Ok(())
 }
 
-/// 列出全部库名（按名称排序）
+pub fn is_system_schema(name: &str) -> bool {
+    matches!(
+        name,
+        "information_schema" | "mysql" | "performance_schema" | "sys"
+    )
+}
+
+/// 列出业务库名（按名称排序，排除系统库）
 pub async fn list_databases(
     conn_cfg: &ConnectionConfig,
     password_plain: &str,
@@ -83,6 +90,7 @@ pub async fn list_databases(
     let names = rows
         .iter()
         .map(|r| r.get::<String, _>("name"))
+        .filter(|n| !is_system_schema(n))
         .collect();
     pool.close().await;
     Ok(names)
@@ -244,6 +252,7 @@ mod tests {
             password: String::new(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         }
     }
 
@@ -258,6 +267,13 @@ mod tests {
     #[test]
     fn quote_ident_escapes_backticks() {
         assert_eq!(quote_ident("a`b"), "`a``b`");
+    }
+
+    #[test]
+    fn system_schemas_are_filtered() {
+        assert!(is_system_schema("mysql"));
+        assert!(is_system_schema("information_schema"));
+        assert!(!is_system_schema("order_2025_lemi"));
     }
 
     /// 真连库冒烟；默认忽略，本地有 MySQL 时可 `cargo test -- --ignored`
@@ -276,6 +292,7 @@ mod tests {
             password: String::new(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         };
         let password = std::env::var("SCHEMA_SYNC_MYSQL_PASSWORD").unwrap_or_default();
         ping(&cfg, &password).await.expect("ping 应成功");
