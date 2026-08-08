@@ -7,12 +7,22 @@ pub const DATA_DIR_ENV: &str = "SCHEMA_SYNC_DATA";
 
 /// 解析本机应用数据目录。
 ///
-/// 优先读取 `SCHEMA_SYNC_DATA`；未设置时回落到平台默认目录
-///（macOS: `~/Library/Application Support/schema-sync`）。
-/// 正式运行时可传入 Tauri `app.path().app_data_dir()` 的结果作为 fallback。
+/// 优先读取 `SCHEMA_SYNC_DATA`；未设置时：
+/// 1. 使用调用方传入的 Tauri `app.path().app_data_dir()`（生产 setup）
+/// 2. 再回落 `dirs::data_dir()/schema-sync`
 pub fn app_data_dir() -> PathBuf {
+    resolve_data_dir(None)
+}
+
+/// 与 [`app_data_dir`] 相同，但可注入 Tauri Application Support 路径作为次优先候选。
+pub fn resolve_data_dir(tauri_app_data: Option<PathBuf>) -> PathBuf {
     if let Ok(override_dir) = std::env::var(DATA_DIR_ENV) {
         let path = PathBuf::from(override_dir);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    if let Some(path) = tauri_app_data {
         if !path.as_os_str().is_empty() {
             return path;
         }
@@ -53,5 +63,22 @@ mod tests {
         std::env::set_var(DATA_DIR_ENV, &path);
         assert_eq!(app_data_dir(), path);
         std::env::remove_var(DATA_DIR_ENV);
+    }
+
+    #[test]
+    fn resolve_prefers_env_over_tauri_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join("env");
+        let tauri_path = dir.path().join("tauri");
+        std::env::set_var(DATA_DIR_ENV, &env_path);
+        assert_eq!(resolve_data_dir(Some(tauri_path)), env_path);
+        std::env::remove_var(DATA_DIR_ENV);
+    }
+
+    #[test]
+    fn resolve_uses_tauri_path_when_no_env() {
+        std::env::remove_var(DATA_DIR_ENV);
+        let tauri_path = PathBuf::from("/tmp/schema-sync-tauri-test");
+        assert_eq!(resolve_data_dir(Some(tauri_path.clone())), tauri_path);
     }
 }

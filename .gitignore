@@ -28,6 +28,7 @@ src-tauri/target
 # App data / secrets（本机配置与主密钥，禁止入库）
 .schema-sync.key
 config.yaml
+config.json
 data/
 *.log
 

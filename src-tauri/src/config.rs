@@ -44,7 +44,8 @@ impl ConfigStore {
         &self.crypto
     }
 
-    /// 加载配置；文件不存在则返回空配置
+    /// 加载配置；文件不存在则返回空配置。
+    /// 若发现明文密码，立即加密并回写（迁移）。
     pub fn load(&self) -> Result<AppConfig, ConfigError> {
         if !self.config_path.exists() {
             return Ok(AppConfig::default());
@@ -53,7 +54,13 @@ impl ConfigStore {
         if text.trim().is_empty() {
             return Ok(AppConfig::default());
         }
-        Ok(serde_json::from_str(&text)?)
+        let mut config: AppConfig = serde_json::from_str(&text)?;
+        if needs_password_migration(&config) {
+            self.save(config.clone())?;
+            let text = fs::read_to_string(&self.config_path)?;
+            config = serde_json::from_str(&text)?;
+        }
+        Ok(config)
     }
 
     /// 保存配置：明文密码先加密再落盘
@@ -87,6 +94,12 @@ fn encrypt_password_in_place(
     }
     conn.password = crypto.encrypt(&conn.password)?;
     Ok(())
+}
+
+fn needs_password_migration(config: &AppConfig) -> bool {
+    config.connections.iter().any(|c| {
+        !c.password.is_empty() && !PasswordCrypto::is_encrypted(&c.password)
+    })
 }
 
 #[cfg(test)]
@@ -157,6 +170,37 @@ mod tests {
             .unwrap();
         let loaded = store.load().unwrap();
         assert_eq!(loaded.connections[0].password, encrypted);
+    }
+
+    #[test]
+    fn load_migrates_plaintext_password_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConfigStore::open(dir.path()).unwrap();
+        let path = store.config_path().to_path_buf();
+        let raw = serde_json::json!({
+            "connections": [{
+                "id": "c1",
+                "name": "本地",
+                "host": "127.0.0.1",
+                "port": 3306,
+                "user": "root",
+                "password": "plain-on-disk",
+                "enabled": true,
+                "remark": ""
+            }],
+            "rules": []
+        });
+        fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert!(PasswordCrypto::is_encrypted(&loaded.connections[0].password));
+        let disk = fs::read_to_string(&path).unwrap();
+        assert!(disk.contains("enc:v1:"));
+        assert!(!disk.contains("plain-on-disk"));
+        assert_eq!(
+            store.crypto().decrypt(&loaded.connections[0].password).unwrap(),
+            "plain-on-disk"
+        );
     }
 
     #[test]
