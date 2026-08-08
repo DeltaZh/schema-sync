@@ -1,5 +1,6 @@
 pub mod config;
 pub mod crypto;
+pub mod ddl_guard;
 pub mod diff;
 pub mod exec;
 pub mod history;
