@@ -1,8 +1,10 @@
 pub mod config;
 pub mod crypto;
 pub mod models;
+pub mod mysql;
 pub mod naming;
 pub mod paths;
+pub mod schema;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
