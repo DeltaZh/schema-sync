@@ -1,7 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BaselineExecuteRequest,
+  BaselineScanRequest,
+  BaselineScanResponse,
   ConnectionConfig,
+  DdlExecuteRequest,
+  DdlPreviewRequest,
+  DdlPreviewResponse,
+  ExecResult,
   ExpandRuleTargetsRequest,
+  HistoryRecord,
   NamingRule,
   RuleTarget,
   TableSchema,
@@ -57,6 +65,30 @@ export function expandRuleTargets(
   req: ExpandRuleTargetsRequest,
 ): Promise<RuleTarget[]> {
   return invoke("expand_rule_targets", { req });
+}
+
+export function baselineScan(
+  req: BaselineScanRequest,
+): Promise<BaselineScanResponse> {
+  return invoke("baseline_scan", { req });
+}
+
+export function baselineExecute(
+  req: BaselineExecuteRequest,
+): Promise<ExecResult[]> {
+  return invoke("baseline_execute", { req });
+}
+
+export function ddlPreview(req: DdlPreviewRequest): Promise<DdlPreviewResponse> {
+  return invoke("ddl_preview", { req });
+}
+
+export function ddlExecute(req: DdlExecuteRequest): Promise<ExecResult[]> {
+  return invoke("ddl_execute", { req });
+}
+
+export function listHistory(limit?: number): Promise<HistoryRecord[]> {
+  return invoke("list_history", { limit: limit ?? null });
 }
 
 /** 生成与后端风格一致的短 id */

@@ -74,3 +74,83 @@ export interface TableSelection {
 }
 
 export type MainTab = "structure" | "baseline" | "ddl" | "rules" | "history";
+
+/** 与 Rust `Risk`（snake_case）对齐 */
+export type Risk = "safe" | "caution" | "dangerous";
+
+/** 与 Rust `DiffKind`（snake_case）对齐 */
+export type DiffKind =
+  | "create_table"
+  | "add_column"
+  | "modify_column"
+  | "drop_column"
+  | "add_index"
+  | "drop_index"
+  | "alter_table_comment";
+
+export interface DiffItem {
+  id: string;
+  kind: DiffKind;
+  risk: Risk;
+  connection_id: string;
+  database: string;
+  table: string;
+  title: string;
+  /** 人类可读说明，含注释信息 */
+  detail: string;
+  /** 仅供预览；执行只认服务端缓存 id */
+  sql: string;
+  selected_default: boolean;
+}
+
+export interface ExecResult {
+  diff_id: string;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface BaselineScanRequest {
+  baseline_connection_id: string;
+  baseline_database: string;
+  tables: string[];
+  rule_id: string;
+  exclude_targets?: RuleTarget[];
+}
+
+export interface BaselineScanResponse {
+  scan_id: string;
+  items: DiffItem[];
+}
+
+export interface BaselineExecuteRequest {
+  scan_id: string;
+  item_ids: string[];
+  stop_on_error?: boolean;
+}
+
+export interface DdlPreviewRequest {
+  sql: string;
+  rule_id: string;
+  exclude?: RuleTarget[];
+}
+
+export interface DdlPreviewResponse {
+  preview_id: string;
+  statements: string[];
+  targets: RuleTarget[];
+}
+
+export interface DdlExecuteRequest {
+  preview_id: string;
+  stop_on_error?: boolean;
+}
+
+export interface HistoryRecord {
+  id: string;
+  /** Unix 毫秒 */
+  ts: number;
+  scan_id: string;
+  stop_on_error: boolean;
+  results: ExecResult[];
+  item_snapshots: DiffItem[];
+}

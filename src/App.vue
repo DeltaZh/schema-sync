@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import BaselineSyncPane from "./components/BaselineSyncPane.vue";
 import ConnectionTree from "./components/ConnectionTree.vue";
+import DdlBroadcastPane from "./components/DdlBroadcastPane.vue";
+import HistoryPane from "./components/HistoryPane.vue";
 import RulesPane from "./components/RulesPane.vue";
 import StructurePane from "./components/StructurePane.vue";
 import type { ConnectionConfig, MainTab, TableSelection } from "./types";
@@ -80,19 +83,22 @@ function onConnectionsChanged(list: ConnectionConfig[]) {
         v-if="activeTab === 'structure'"
         :selection="selection"
       />
+      <BaselineSyncPane
+        v-else-if="activeTab === 'baseline'"
+        :connections="connections"
+      />
+      <DdlBroadcastPane
+        v-else-if="activeTab === 'ddl'"
+        :connections="connections"
+      />
       <RulesPane
         v-else-if="activeTab === 'rules'"
         :connections="connections"
       />
-      <div v-else class="pane-body placeholder-pane">
-        <template v-if="activeTab === 'baseline'">
-          基准同步界面将在后续任务接入
-        </template>
-        <template v-else-if="activeTab === 'ddl'">
-          DDL 投放界面将在后续任务接入
-        </template>
-        <template v-else> 历史界面将在后续任务接入 </template>
-      </div>
+      <HistoryPane
+        v-else
+        :connections="connections"
+      />
     </div>
   </div>
 </template>
