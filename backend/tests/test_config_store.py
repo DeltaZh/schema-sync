@@ -20,6 +20,30 @@ def test_save_encrypts_password(tmp_path: Path):
     assert crypto.decrypt(loaded.instances[0].password) == "plain"
 
 
+def test_load_migrates_plaintext_password(tmp_path: Path):
+    crypto = PasswordCrypto.load_or_create(tmp_path / ".schema-sync.key")
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "instances:\n"
+        "  - id: main\n"
+        "    host: h\n"
+        "    port: 3306\n"
+        "    user: u\n"
+        "    password: plain-secret\n"
+        "    enabled: true\n"
+        "    remark: ''\n"
+        "table_groups: []\n",
+        encoding="utf-8",
+    )
+    store = ConfigStore(cfg_path, crypto)
+    loaded = store.load()
+    assert PasswordCrypto.is_encrypted(loaded.instances[0].password)
+    assert crypto.decrypt(loaded.instances[0].password) == "plain-secret"
+    disk = cfg_path.read_text(encoding="utf-8")
+    assert "plain-secret" not in disk
+    assert "enc:v1:" in disk
+
+
 def test_upsert_keeps_password_when_none(tmp_path: Path):
     crypto = PasswordCrypto.load_or_create(tmp_path / ".schema-sync.key")
     store = ConfigStore(tmp_path / "config.yaml", crypto)

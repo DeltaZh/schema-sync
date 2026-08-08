@@ -69,6 +69,11 @@ def drop_index_sql(table: str, index: IndexDef) -> str:
     return f"ALTER TABLE {quote_ident(table)} DROP INDEX {quote_ident(index.name)}"
 
 
+def alter_table_comment_sql(table: str, comment: str) -> str:
+    escaped = comment.replace("\\", "\\\\").replace("'", "\\'")
+    return f"ALTER TABLE {quote_ident(table)} COMMENT='{escaped}'"
+
+
 def create_table_sql(template: TableSchema) -> str:
     if template.create_sql.strip():
         return template.create_sql

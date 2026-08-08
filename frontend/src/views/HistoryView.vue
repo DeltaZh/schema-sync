@@ -40,6 +40,13 @@ function summary(r: HistoryRecord) {
   return `成功 ${ok} / 失败 ${fail} / 共 ${r.results.length}`
 }
 
+function riskLabel(risk: string) {
+  if (risk === 'safe') return '安全'
+  if (risk === 'caution') return '谨慎'
+  if (risk === 'dangerous') return '危险'
+  return risk
+}
+
 onMounted(load)
 </script>
 
@@ -100,7 +107,7 @@ onMounted(load)
         <div v-if="r.item_snapshots.length === 0" class="muted">无快照</div>
         <div v-for="item in r.item_snapshots" :key="item.id" style="margin-bottom: 0.6rem">
           <div>
-            <span :class="`badge badge-${item.risk}`">{{ item.risk }}</span>
+            <span :class="`badge badge-${item.risk}`">{{ riskLabel(item.risk) }}</span>
             <strong style="margin-left: 0.35rem">{{ item.title }}</strong>
           </div>
           <div class="muted" style="font-size: 0.85rem">

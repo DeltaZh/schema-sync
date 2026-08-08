@@ -15,7 +15,7 @@ from app import sql_gen
 def _risk_for(kind: DiffKind) -> RiskLevel:
     if kind in ("drop_column", "drop_index"):
         return "dangerous"
-    if kind in ("modify_column", "modify_index"):
+    if kind in ("modify_column", "modify_index", "modify_table"):
         return "caution"
     return "safe"
 
@@ -96,6 +96,19 @@ def diff_table(
         ]
 
     items: list[DiffItem] = []
+
+    if (template.comment or "") != (target.comment or ""):
+        items.append(
+            _item(
+                kind="modify_table",
+                instance_id=instance_id,
+                database=database,
+                table=table,
+                name="COMMENT",
+                title=f"修改表注释 {table}",
+                sql=sql_gen.alter_table_comment_sql(table, template.comment or ""),
+            )
+        )
 
     tmpl_cols = {c.name: c for c in template.columns}
     tgt_cols = {c.name: c for c in target.columns}

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 RiskLevel = Literal["safe", "caution", "dangerous"]
 DiffKind = Literal[
     "create_table",
+    "modify_table",
     "add_column",
     "modify_column",
     "drop_column",

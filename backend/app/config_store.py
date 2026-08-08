@@ -16,17 +16,33 @@ class ConfigStore:
         if not self._config_path.exists():
             return AppConfig()
         data = yaml.safe_load(self._config_path.read_text(encoding="utf-8")) or {}
-        return AppConfig.model_validate(data)
+        config = AppConfig.model_validate(data)
+        # 加载路径：若存在明文密码则加密并原子回写
+        dirty = False
+        for inst in config.instances:
+            if inst.password and not PasswordCrypto.is_encrypted(inst.password):
+                inst.password = self._crypto.encrypt(inst.password)
+                dirty = True
+        if dirty:
+            self._atomic_write(config)
+        return config
 
     def save(self, config: AppConfig) -> None:
         config_to_save = deepcopy(config)
         for inst in config_to_save.instances:
             if inst.password and not PasswordCrypto.is_encrypted(inst.password):
                 inst.password = self._crypto.encrypt(inst.password)
+        self._atomic_write(config_to_save)
+
+    def _atomic_write(self, config: AppConfig) -> None:
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = config_to_save.model_dump(mode="json")
-        text = yaml.dump(payload, allow_unicode=True, default_flow_style=False, sort_keys=False)
-        self._config_path.write_text(text, encoding="utf-8")
+        payload = config.model_dump(mode="json")
+        text = yaml.dump(
+            payload, allow_unicode=True, default_flow_style=False, sort_keys=False
+        )
+        tmp = self._config_path.with_suffix(self._config_path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(self._config_path)
 
     def upsert_instance(
         self, inst: InstanceConfig, plaintext_password: str | None

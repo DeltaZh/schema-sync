@@ -88,3 +88,25 @@ def test_diff_item_id_format():
     items = diff_table(tmpl, tgt, instance_id="inst-1", database="shop_db")
     add = next(i for i in items if i.kind == "add_column")
     assert add.id == "inst-1|shop_db|t|add_column|name"
+
+
+def test_table_comment_diff_is_caution_alter():
+    cols = [_col("id")]
+    tmpl = TableSchema(name="t", columns=cols, indexes=[], comment="模板注释")
+    tgt = TableSchema(name="t", columns=cols, indexes=[], comment="旧注释")
+    items = diff_table(tmpl, tgt, instance_id="main", database="db1")
+    assert len(items) == 1
+    item = items[0]
+    assert item.kind == "modify_table"
+    assert item.risk == "caution"
+    assert item.selected_default is False
+    assert "ALTER TABLE" in item.sql.upper()
+    assert "COMMENT=" in item.sql.upper()
+    assert "模板注释" in item.sql
+
+
+def test_table_comment_equal_no_diff():
+    cols = [_col("id")]
+    tmpl = TableSchema(name="t", columns=cols, indexes=[], comment="同")
+    tgt = TableSchema(name="t", columns=cols, indexes=[], comment="同")
+    assert diff_table(tmpl, tgt, instance_id="main", database="db1") == []
