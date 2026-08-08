@@ -1,5 +1,7 @@
 # Schema Sync 实现计划
 
+> **已作废：** 请改用 `2026-08-08-schema-sync-desktop.md`（Tauri 单机桌面版）。勿再按本文执行。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 落地本地 Web 小工具：以模板表为准，跨多 MySQL 实例扫描同源分库指定表差异，勾选后执行结构同步。
