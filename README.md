@@ -66,8 +66,9 @@ open "src-tauri/target/release/bundle/macos/schema-sync.app"
 3. **执行只认缓存 id**：
    - 模式 1：`baseline_execute` 仅接受 `scan_id` + `item_ids`，SQL 来自 Rust 侧扫描缓存。
    - 模式 2：`ddl_execute` 仅接受预览阶段下发的 `preview_id`，禁止客户端篡改待执行 SQL。
-4. **二次确认**：执行前须预览并确认。
-5. **模式 2 DDL 白名单**：仅允许结构类语句；拒绝 `DROP` / `DELETE` / `UPDATE` / `TRUNCATE` 等。
+4. **二次确认**：执行前须预览并确认；高风险语句（如 `DROP` / `DELETE` / `UPDATE` / `INSERT` 等）需额外输入「确认执行」。
+5. **模式 2 DDL 校验**：禁止 `DROP DATABASE`；其余语句按风险分级，高风险须二次确认后才可执行。
+6. **勿提交本机数据**：`config.json`、`.schema-sync.key`、`history.jsonl`、`.schema-sync-data/` 已在 `.gitignore`；仓库仅含 `config.example.json` 占位示例。
 
 ## 使用说明
 
@@ -78,7 +79,7 @@ open "src-tauri/target/release/bundle/macos/schema-sync.app"
 
 ### 命名规则
 
-规则由「逻辑名」+ 可排序部件（租户 / 年 / 分片）组成，笛卡尔展开为物理库名，并绑定到若干连接。用于模式 1 / 模式 2 的目标库集合。
+规则由展示名 + 命名模板（如 `order_{年份}_{租户}`）与各占位符取值列表组成，展开为物理库名并绑定连接。用于模式 1 / 模式 2 的目标库集合。
 
 ### 模式 1：基准对齐
 
@@ -89,7 +90,7 @@ open "src-tauri/target/release/bundle/macos/schema-sync.app"
 ### 模式 2：DDL 投放
 
 1. 选择规则（可剔库）→ 粘贴结构 DDL（`;` 分隔）。
-2. 预览：白名单校验通过后展示目标库与语句；危险语句会被拒绝。
+2. 预览：校验通过后展示目标库与语句；高风险语句会标出并要求二次确认。
 3. 确认后按 `preview_id` 串行执行并记录结果。
 
 ### 历史

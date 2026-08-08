@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::ddl_guard;
-use crate::exec::ExecResult;
+use crate::exec::{exec_result, ExecResult};
 use crate::history::{new_record_meta, HistoryRecord};
 use crate::mysql;
 use crate::preview_cache::{DdlPreviewEntry, FrozenConnection, RuleTarget};
@@ -27,6 +27,11 @@ pub struct DdlPreviewRequest {
 pub struct DdlPreviewResponse {
     pub preview_id: String,
     pub statements: Vec<String>,
+    /// 与 statements 等长：是否高风险（删改数据 / 删表删字段等）
+    #[serde(default)]
+    pub statement_high_risk: Vec<bool>,
+    #[serde(default)]
+    pub has_high_risk: bool,
     pub targets: Vec<RuleTarget>,
     #[serde(default)]
     pub warnings: Vec<String>,
@@ -47,6 +52,7 @@ fn default_true() -> bool {
 pub fn ddl_preview_store(
     state: &AppState,
     statements: Vec<String>,
+    statement_high_risk: Vec<bool>,
     targets: Vec<RuleTarget>,
     warnings: Vec<String>,
 ) -> Result<DdlPreviewResponse, String> {
@@ -76,9 +82,12 @@ pub fn ddl_preview_store(
         .map_err(|e| e.to_string())?
         .put(preview_id.clone(), entry);
 
+    let has_high_risk = statement_high_risk.iter().any(|v| *v);
     Ok(DdlPreviewResponse {
         preview_id,
         statements,
+        statement_high_risk,
+        has_high_risk,
         targets,
         warnings,
     })
@@ -89,7 +98,12 @@ pub async fn ddl_preview_core(
     state: &AppState,
     req: &DdlPreviewRequest,
 ) -> Result<DdlPreviewResponse, String> {
-    let statements = ddl_guard::validate_structure_ddl(&req.sql)?;
+    let validated = ddl_guard::validate_executable_ddl(&req.sql)?;
+    let statement_high_risk: Vec<bool> = validated
+        .risks
+        .iter()
+        .map(|r| matches!(r, ddl_guard::StmtRisk::High))
+        .collect();
     let (rule, config) = {
         let config = state.config.lock().map_err(|e| e.to_string())?;
         let rule = config
@@ -105,8 +119,20 @@ pub async fn ddl_preview_core(
     let (targets, probe_warnings) =
         filter_targets_existing(targets, &config, &state.store).await;
     warnings.extend(probe_warnings);
+    if validated.has_high_risk() {
+        warnings.push(format!(
+            "含 {} 条高风险语句（更新/删除数据或删表/删字段等），执行时需二次确认",
+            validated.high_risk_count()
+        ));
+    }
 
-    ddl_preview_store(state, statements, targets, warnings)
+    ddl_preview_store(
+        state,
+        validated.statements,
+        statement_high_risk,
+        targets,
+        warnings,
+    )
 }
 
 #[tauri::command]
@@ -139,12 +165,25 @@ pub async fn ddl_execute(
                 "{}|{}|stmt{}",
                 target.connection_id, target.database, idx
             );
+            let conn_name = entry
+                .connections
+                .get(&target.connection_id)
+                .map(|f| f.name.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(target.connection_id.as_str());
+            let summary = format!("第 {} 条语句", idx + 1);
+
             if stopped {
-                results.push(ExecResult {
+                results.push(exec_result(
                     diff_id,
-                    ok: false,
-                    error: Some("已因前序错误停止，未执行".into()),
-                });
+                    false,
+                    Some("已因前序错误停止，未执行".into()),
+                    &target.connection_id,
+                    conn_name,
+                    &target.database,
+                    &summary,
+                    sql,
+                ));
                 continue;
             }
 
@@ -152,14 +191,16 @@ pub async fn ddl_execute(
             let frozen = match entry.connections.get(&target.connection_id) {
                 Some(f) => f,
                 None => {
-                    results.push(ExecResult {
+                    results.push(exec_result(
                         diff_id,
-                        ok: false,
-                        error: Some(format!(
-                            "预览快照中缺少连接: {}",
-                            target.connection_id
-                        )),
-                    });
+                        false,
+                        Some(format!("预览快照中缺少连接: {}", target.connection_id)),
+                        &target.connection_id,
+                        &target.connection_id,
+                        &target.database,
+                        &summary,
+                        sql,
+                    ));
                     if req.stop_on_error {
                         stopped = true;
                     }
@@ -170,11 +211,16 @@ pub async fn ddl_execute(
             let password = match decrypt_password(&state.store, &conn) {
                 Ok(p) => p,
                 Err(e) => {
-                    results.push(ExecResult {
+                    results.push(exec_result(
                         diff_id,
-                        ok: false,
-                        error: Some(e),
-                    });
+                        false,
+                        Some(e),
+                        &target.connection_id,
+                        conn_name,
+                        &target.database,
+                        &summary,
+                        sql,
+                    ));
                     if req.stop_on_error {
                         stopped = true;
                     }
@@ -183,17 +229,27 @@ pub async fn ddl_execute(
             };
 
             match mysql::execute_sql(&conn, &password, &target.database, sql).await {
-                Ok(()) => results.push(ExecResult {
+                Ok(()) => results.push(exec_result(
                     diff_id,
-                    ok: true,
-                    error: None,
-                }),
+                    true,
+                    None,
+                    &target.connection_id,
+                    conn_name,
+                    &target.database,
+                    &summary,
+                    sql,
+                )),
                 Err(e) => {
-                    results.push(ExecResult {
+                    results.push(exec_result(
                         diff_id,
-                        ok: false,
-                        error: Some(e.to_string()),
-                    });
+                        false,
+                        Some(e.to_string()),
+                        &target.connection_id,
+                        conn_name,
+                        &target.database,
+                        &summary,
+                        sql,
+                    ));
                     if req.stop_on_error {
                         stopped = true;
                     }
@@ -243,9 +299,11 @@ mod tests {
         }];
         cfg.rules = vec![NamingRule {
             id: "r1".into(),
+            display_name: "订单库".into(),
+            pattern: "order_{租户}".into(),
             logical_name: "order".into(),
             parts_order: vec![PartKind::Tenant],
-            tenants: vec!["lemi".into()],
+            tenants: vec!["demo".into()],
             years: vec![],
             shards: vec![],
             connection_ids: vec!["c1".into()],
@@ -254,21 +312,17 @@ mod tests {
     }
 
     #[test]
-    fn ddl_preview_rejects_dangerous_sql() {
+    fn ddl_preview_accepts_high_risk_delete_with_flag() {
         let (_dir, state) = AppState::open_temp();
         seed_rule(&state);
-        // 危险语句在探测前即拒绝（同步校验路径）
-        let err = ddl_guard::validate_structure_ddl("DELETE FROM users WHERE id = 1;")
-            .unwrap_err();
-        assert!(
-            err.contains("DELETE") || err.contains("不允许") || err.contains("危险"),
-            "unexpected err: {err}"
-        );
+        let v = ddl_guard::validate_executable_ddl("DELETE FROM users WHERE id = 1;").unwrap();
+        assert!(v.has_high_risk());
+
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let err = rt
+        let resp = rt
             .block_on(ddl_preview_core(
                 &state,
                 &DdlPreviewRequest {
@@ -277,11 +331,15 @@ mod tests {
                     exclude: vec![],
                 },
             ))
-            .unwrap_err();
-        assert!(
-            err.contains("DELETE") || err.contains("不允许") || err.contains("危险"),
-            "unexpected err: {err}"
-        );
+            .unwrap();
+        assert!(resp.has_high_risk);
+        assert_eq!(resp.statement_high_risk, vec![true]);
+    }
+
+    #[test]
+    fn ddl_preview_accepts_insert_as_high_risk() {
+        let v = ddl_guard::validate_executable_ddl("INSERT INTO t (id) VALUES (1);").unwrap();
+        assert!(v.has_high_risk());
     }
 
     #[test]
@@ -290,12 +348,13 @@ mod tests {
         seed_rule(&state);
         let targets = vec![RuleTarget {
             connection_id: "c1".into(),
-            database: "order_lemi".into(),
+            database: "order_demo".into(),
             exists: Some(true),
         }];
         let resp = ddl_preview_store(
             &state,
             vec!["ALTER TABLE t ADD COLUMN c int".into()],
+            vec![false],
             targets.clone(),
             vec![],
         )
@@ -340,6 +399,7 @@ mod tests {
     #[test]
     fn frozen_snapshot_used_over_live_config() {
         let frozen = FrozenConnection {
+            name: "预览连接".into(),
             host: "preview-host".into(),
             port: 3307,
             user: "u".into(),

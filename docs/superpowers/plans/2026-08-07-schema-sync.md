@@ -380,16 +380,16 @@ EOF
 from app.discover import match_databases
 
 def test_order_year_tenant_pattern():
-    names = ["order_2025_lemi", "order_2026_whd", "product_lemi", "mysql"]
-    assert match_databases(names, "order_*_*") == ["order_2025_lemi", "order_2026_whd"]
+    names = ["order_2025_demo", "order_2026_acme", "product_demo", "mysql"]
+    assert match_databases(names, "order_*_*") == ["order_2025_demo", "order_2026_acme"]
 
 def test_exclude_template():
-    names = ["order_2025_lemi", "order_2026_whd"]
-    assert match_databases(names, "order_*_*", exclude="order_2025_lemi") == ["order_2026_whd"]
+    names = ["order_2025_demo", "order_2026_acme"]
+    assert match_databases(names, "order_*_*", exclude="order_2025_demo") == ["order_2026_acme"]
 
 def test_product_pattern():
-    names = ["product_lemi", "product_whd", "order_2025_lemi"]
-    assert match_databases(names, "product_*") == ["product_lemi", "product_whd"]
+    names = ["product_demo", "product_acme", "order_2025_demo"]
+    assert match_databases(names, "product_*") == ["product_demo", "product_acme"]
 ```
 
 - [ ] **Step 2: 跑测试确认失败**

@@ -105,8 +105,11 @@ mod tests {
             connection_id: "c1".into(),
             database: "db1".into(),
             table: "t".into(),
+            object_name: "x".into(),
             title: "t".into(),
             detail: "".into(),
+            baseline_view: String::new(),
+            target_view: String::new(),
             sql: "ALTER TABLE t ADD COLUMN x int".into(),
             selected_default: true,
         }
@@ -126,6 +129,11 @@ mod tests {
                 diff_id: "a".into(),
                 ok: true,
                 error: None,
+                connection_id: "c1".into(),
+                connection_name: "本地".into(),
+                database: "db1".into(),
+                summary: "新增列".into(),
+                sql_preview: "ALTER TABLE t ADD COLUMN x int".into(),
             }],
             item_snapshots: vec![snap("a")],
         };

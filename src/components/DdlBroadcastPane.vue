@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
+import ExecResultsTable from "./ExecResultsTable.vue";
+import { askConfirm, askDangerousExecute } from "../lib/confirmDialog";
 import {
   ddlExecute,
   ddlPreview,
@@ -122,13 +124,18 @@ async function runExecute() {
     return;
   }
   const p = preview.value;
-  if (
-    !confirm(
-      `即将向 ${p.targets.length} 个目标库执行已校验的 ${p.statements.length} 条语句。是否继续？`,
-    )
-  ) {
-    return;
-  }
+  const highCount =
+    p.statement_high_risk?.filter(Boolean).length ??
+    (p.has_high_risk ? p.statements.length : 0);
+  const summary = `即将向 ${p.targets.length} 个目标库执行已校验的 ${p.statements.length} 条语句（高风险 ${highCount} 条）。`;
+  const ok =
+    highCount > 0 || p.has_high_risk
+      ? await askDangerousExecute(summary)
+      : await askConfirm(`${summary}\n是否继续？`, {
+          title: "确认投放",
+          confirmText: "开始投放",
+        });
+  if (!ok) return;
   executing.value = true;
   status.value = "正在执行投放…";
   try {
@@ -189,14 +196,15 @@ onMounted(async () => {
     <div class="section-block">
       <h2 class="section-title">DDL 投放</h2>
       <p class="muted">
-        仅允许结构变更类语句（如 ALTER / CREATE INDEX 等）。危险语句会在预览阶段被拒绝。
+        支持结构变更，以及 INSERT / REPLACE / 更新删除数据、删表删字段等。高风险语句预览会标红，执行时需二次确认（输入「确认执行」）。不支持
+        DROP DATABASE。
       </p>
       <div class="form-grid" style="max-width: none">
         <label for="ddl-rule">命名规则</label>
         <select id="ddl-rule" v-model="ruleId" class="field">
           <option value="" disabled>请选择规则</option>
           <option v-for="r in rules" :key="r.id" :value="r.id">
-            {{ r.logical_name || r.id }}
+            {{ r.display_name || "未命名" }}{{ r.pattern ? ` · ${r.pattern}` : "" }}
           </option>
         </select>
 
@@ -205,7 +213,7 @@ onMounted(async () => {
           id="ddl-sql"
           v-model="sql"
           class="textarea ddl-sql"
-          placeholder="粘贴要投放的结构变更 SQL，多条语句用分号分隔"
+          placeholder="粘贴 SQL（支持 -- / /* */ / // 注释；多条用分号分隔）"
         />
       </div>
     </div>
@@ -262,7 +270,18 @@ onMounted(async () => {
       <h4 class="subsection-title">已校验语句</h4>
       <ol class="stmt-list">
         <li v-for="(s, i) in preview.statements" :key="i">
-          <pre class="pre-box">{{ s }}</pre>
+          <div
+            v-if="preview.statement_high_risk?.[i]"
+            class="error-text"
+            style="margin-bottom: 4px; font-size: 12px"
+          >
+            高风险 · 执行需二次确认
+          </div>
+          <pre
+            class="pre-box"
+            :class="{ 'pre-box-danger': preview.statement_high_risk?.[i] }"
+            >{{ s }}</pre
+          >
         </li>
       </ol>
 
@@ -286,26 +305,8 @@ onMounted(async () => {
     </div>
 
     <div v-if="execResults.length" class="section-block">
-      <h3 class="section-title">执行结果</h3>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>状态</th>
-            <th>目标 / 语句</th>
-            <th>错误</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(r, i) in execResults" :key="i">
-            <td>
-              <span v-if="r.ok" class="ok-text">成功</span>
-              <span v-else class="error-text">失败</span>
-            </td>
-            <td><code>{{ r.diff_id }}</code></td>
-            <td>{{ r.error || "—" }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <h3 class="section-title">执行结果（{{ execResults.length }}）</h3>
+      <ExecResultsTable :results="execResults" :conn-name="connName" />
     </div>
   </div>
 </template>
@@ -321,5 +322,9 @@ onMounted(async () => {
 .warn-box ul {
   margin: 0;
   padding-left: 1.2em;
+}
+.pre-box-danger {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-panel));
 }
 </style>

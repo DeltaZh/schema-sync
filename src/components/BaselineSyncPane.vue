@@ -1,15 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
-import { kindLabel, riskLabel } from "../lib/labels";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import BaselineDiffReview from "./BaselineDiffReview.vue";
+import ExecResultsTable from "./ExecResultsTable.vue";
+import { askConfirm, askDangerousExecute } from "../lib/confirmDialog";
 import {
   baselineExecute,
   baselineScan,
+  cancelBaselineScan,
   expandRuleTargets,
   listDatabases,
   listRules,
   listTables,
+  newId,
+  suggestRuleForDatabase,
 } from "../lib/tauri";
 import type {
+  BaselineScanProgress,
   ConnectionConfig,
   DiffItem,
   ExecResult,
@@ -24,6 +31,7 @@ const props = defineProps<{
 
 const rules = ref<NamingRule[]>([]);
 const ruleId = ref("");
+const ruleMatchHint = ref("");
 const baselineConnId = ref("");
 const baselineDb = ref("");
 const databases = ref<string[]>([]);
@@ -45,9 +53,21 @@ const status = ref("");
 const error = ref("");
 const execResults = ref<ExecResult[]>([]);
 
+const scanJobId = ref("");
+const scanProgress = ref<BaselineScanProgress | null>(null);
+let progressUnlisten: UnlistenFn | null = null;
+/** 用户手动改过规则后，短暂跳过自动匹配覆盖 */
+const ruleTouchedByUser = ref(false);
+
 const enabledConnections = computed(() =>
   props.connections.filter((c) => c.enabled),
 );
+
+const progressPercent = computed(() => {
+  const p = scanProgress.value;
+  if (!p || p.total <= 0) return 0;
+  return Math.min(100, Math.round((p.done / p.total) * 100));
+});
 
 function targetKey(t: RuleTarget): string {
   return `${t.connection_id}|${t.database}`;
@@ -98,6 +118,38 @@ async function loadTables() {
   } finally {
     loadingTables.value = false;
   }
+}
+
+async function autoMatchRule() {
+  ruleMatchHint.value = "";
+  if (!baselineDb.value) return;
+  try {
+    const sug = await suggestRuleForDatabase(baselineDb.value);
+    if (!sug.rule_id) {
+      ruleMatchHint.value = "未匹配到命名规则，请手动选择";
+      return;
+    }
+    if (!rules.value.some((r) => r.id === sug.rule_id)) {
+      await reloadRules();
+    }
+    if (ruleTouchedByUser.value && ruleId.value && ruleId.value !== sug.rule_id) {
+      ruleMatchHint.value = `也可匹配：${sug.display_name || sug.pattern}（当前为手动选择）`;
+      return;
+    }
+    ruleId.value = sug.rule_id;
+    if (sug.match_count > 1) {
+      ruleMatchHint.value = `已自动匹配「${sug.display_name || sug.pattern}」（共 ${sug.match_count} 条命中，可改）`;
+    } else {
+      ruleMatchHint.value = `已自动匹配「${sug.display_name || sug.pattern}」`;
+    }
+  } catch (e) {
+    ruleMatchHint.value = `自动匹配失败：${String(e)}`;
+  }
+}
+
+function onRuleManualChange() {
+  ruleTouchedByUser.value = true;
+  ruleMatchHint.value = "已手动选择命名规则";
 }
 
 function toggleTable(name: string, checked: boolean) {
@@ -161,12 +213,28 @@ function selectDefaultItems() {
   );
 }
 
+async function bindProgressListener(jobId: string) {
+  if (progressUnlisten) {
+    progressUnlisten();
+    progressUnlisten = null;
+  }
+  progressUnlisten = await listen<BaselineScanProgress>(
+    "baseline-scan-progress",
+    (event) => {
+      if (event.payload.job_id !== jobId) return;
+      scanProgress.value = event.payload;
+      status.value = event.payload.message;
+    },
+  );
+}
+
 async function runScan() {
   error.value = "";
   execResults.value = [];
   scanId.value = "";
   items.value = [];
   selectedIds.value = new Set();
+  scanProgress.value = null;
 
   if (!baselineConnId.value || !baselineDb.value) {
     error.value = "请选择基准连接与数据库";
@@ -181,9 +249,19 @@ async function runScan() {
     return;
   }
 
+  const jobId = newId("job");
+  scanJobId.value = jobId;
   scanning.value = true;
   status.value = "正在扫描差异…";
+  scanProgress.value = {
+    job_id: jobId,
+    done: 0,
+    total: 1,
+    message: "准备扫描…",
+  };
+
   try {
+    await bindProgressListener(jobId);
     const exclude_targets = targets.value
       .filter((t) => excludedKeys.value.has(targetKey(t)))
       .map((t) => ({
@@ -196,19 +274,41 @@ async function runScan() {
       tables: [...selectedTables.value],
       rule_id: ruleId.value,
       exclude_targets,
+      job_id: jobId,
     });
     scanId.value = resp.scan_id;
     items.value = resp.items;
     selectDefaultItems();
     const warnCount = resp.warnings?.length ?? 0;
-    status.value = `扫描完成：${resp.items.length} 条差异（scan_id=${resp.scan_id}）${
+    status.value = `扫描完成：${resp.items.length} 条差异${
       warnCount ? `；${warnCount} 条提示（已跳过缺失库等）` : ""
     }`;
   } catch (e) {
-    error.value = String(e);
-    status.value = "";
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("已终止")) {
+      status.value = "扫描已终止";
+      error.value = "";
+    } else {
+      error.value = msg;
+      status.value = "";
+    }
   } finally {
     scanning.value = false;
+    scanJobId.value = "";
+    if (progressUnlisten) {
+      progressUnlisten();
+      progressUnlisten = null;
+    }
+  }
+}
+
+async function stopScan() {
+  if (!scanJobId.value) return;
+  try {
+    await cancelBaselineScan(scanJobId.value);
+    status.value = "正在终止扫描…";
+  } catch (e) {
+    error.value = String(e);
   }
 }
 
@@ -224,13 +324,18 @@ async function runExecute() {
     error.value = "请至少勾选一条差异";
     return;
   }
-  if (
-    !confirm(
-      `即将按已勾选的 ${ids.length} 条差异执行同步（仅使用服务端缓存 id，不提交客户端 SQL）。是否继续？`,
-    )
-  ) {
-    return;
-  }
+  const dangerousCount = items.value.filter(
+    (i) => selectedIds.value.has(i.id) && i.risk === "dangerous",
+  ).length;
+  const summary = `即将按已勾选的 ${ids.length} 条差异执行同步（其中危险 ${dangerousCount} 条）。`;
+  const ok =
+    dangerousCount > 0
+      ? await askDangerousExecute(summary)
+      : await askConfirm(`${summary}\n是否继续？`, {
+          title: "确认执行",
+          confirmText: "开始执行",
+        });
+  if (!ok) return;
 
   executing.value = true;
   status.value = "正在执行…";
@@ -252,11 +357,14 @@ async function runExecute() {
 }
 
 watch(baselineConnId, () => {
+  ruleTouchedByUser.value = false;
   void loadDatabases();
 });
 
 watch(baselineDb, () => {
+  ruleTouchedByUser.value = false;
   void loadTables();
+  void autoMatchRule();
 });
 
 watch(ruleId, () => {
@@ -276,6 +384,13 @@ onMounted(() => {
     baselineConnId.value = enabledConnections.value[0].id;
   }
 });
+
+onUnmounted(() => {
+  if (progressUnlisten) {
+    progressUnlisten();
+    progressUnlisten = null;
+  }
+});
 </script>
 
 <template>
@@ -291,8 +406,16 @@ onMounted(() => {
       </button>
       <button
         type="button"
+        class="btn danger"
+        :disabled="!scanning"
+        @click="stopScan"
+      >
+        终止扫描
+      </button>
+      <button
+        type="button"
         class="btn primary"
-        :disabled="executing || !scanId"
+        :disabled="executing || scanning || !scanId"
         @click="runExecute"
       >
         {{ executing ? "执行中…" : "确认执行" }}
@@ -303,6 +426,22 @@ onMounted(() => {
       </label>
       <span class="spacer" />
       <span v-if="status" class="muted">{{ status }}</span>
+    </div>
+
+    <div v-if="scanning" class="progress-block">
+      <div class="progress-track" aria-hidden="true">
+        <div
+          class="progress-fill"
+          :style="{ width: `${progressPercent}%` }"
+        />
+      </div>
+      <div class="progress-meta">
+        <span>{{ progressPercent }}%</span>
+        <span class="muted" v-if="scanProgress">
+          {{ scanProgress.done }} / {{ scanProgress.total }}
+        </span>
+        <span class="muted">{{ scanProgress?.message || "准备中…" }}</span>
+      </div>
     </div>
 
     <p v-if="error" class="error-text">{{ error }}</p>
@@ -338,12 +477,23 @@ onMounted(() => {
         </select>
 
         <label for="bl-rule">命名规则</label>
-        <select id="bl-rule" v-model="ruleId" class="field">
-          <option value="" disabled>请选择规则</option>
-          <option v-for="r in rules" :key="r.id" :value="r.id">
-            {{ r.logical_name || r.id }}
-          </option>
-        </select>
+        <div>
+          <select
+            id="bl-rule"
+            v-model="ruleId"
+            class="field"
+            @change="onRuleManualChange"
+          >
+            <option value="" disabled>请选择规则</option>
+            <option v-for="r in rules" :key="r.id" :value="r.id">
+              {{ r.display_name || "未命名"
+              }}{{ r.pattern ? ` · ${r.pattern}` : "" }}
+            </option>
+          </select>
+          <p v-if="ruleMatchHint" class="muted" style="margin: 6px 0 0; font-size: 12px">
+            {{ ruleMatchHint }}
+          </p>
+        </div>
       </div>
 
       <div v-if="tables.length" class="table-pick" style="margin-top: 12px">
@@ -419,90 +569,23 @@ onMounted(() => {
     </div>
 
     <div v-if="items.length" class="section-block">
-      <h3 class="section-title">差异列表（{{ items.length }}）</h3>
-      <div class="toolbar" style="border: none; background: transparent; padding: 0 0 8px">
-        <button type="button" class="btn ghost" @click="selectDefaultItems">
-          恢复默认勾选
-        </button>
-        <button type="button" class="btn ghost" @click="selectAllItems(true)">
-          全选
-        </button>
-        <button type="button" class="btn ghost" @click="selectAllItems(false)">
-          全不选
-        </button>
-        <span class="muted">已选 {{ selectedIds.size }} 条</span>
-      </div>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th></th>
-            <th>风险</th>
-            <th>类型</th>
-            <th>目标</th>
-            <th>说明</th>
-            <th>SQL 预览</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="item in items" :key="item.id">
-            <td>
-              <input
-                type="checkbox"
-                :checked="selectedIds.has(item.id)"
-                @change="
-                  toggleItem(
-                    item.id,
-                    ($event.target as HTMLInputElement).checked,
-                  )
-                "
-              />
-            </td>
-            <td>
-              <span class="risk-badge" :data-risk="item.risk">
-                {{ riskLabel(item.risk) }}
-              </span>
-            </td>
-            <td>{{ kindLabel(item.kind) }}</td>
-            <td>
-              <div>{{ connName(item.connection_id) }}</div>
-              <code>{{ item.database }}.{{ item.table }}</code>
-            </td>
-            <td>
-              <div class="diff-title">{{ item.title }}</div>
-              <div class="muted">{{ item.detail }}</div>
-            </td>
-            <td>
-              <pre class="sql-cell">{{ item.sql }}</pre>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <h3 class="section-title">差异对照（{{ items.length }}）</h3>
+      <BaselineDiffReview
+        :items="items"
+        :selected-ids="selectedIds"
+        :conn-name="connName"
+        @toggle-item="toggleItem"
+        @select-all="selectAllItems"
+        @select-default="selectDefaultItems"
+      />
     </div>
     <div v-else-if="scanId" class="section-block muted">
       扫描完成，未发现差异
     </div>
 
     <div v-if="execResults.length" class="section-block">
-      <h3 class="section-title">执行结果</h3>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>状态</th>
-            <th>差异 ID</th>
-            <th>错误</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(r, i) in execResults" :key="i">
-            <td>
-              <span v-if="r.ok" class="ok-text">成功</span>
-              <span v-else class="error-text">失败</span>
-            </td>
-            <td><code>{{ r.diff_id }}</code></td>
-            <td>{{ r.error || "—" }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <h3 class="section-title">执行结果（{{ execResults.length }}）</h3>
+      <ExecResultsTable :results="execResults" :conn-name="connName" />
     </div>
   </div>
 </template>

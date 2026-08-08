@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use sqlx::mysql::{MySqlPoolOptions, MySqlRow};
+use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlRow, MySqlSslMode};
 use sqlx::{MySqlPool, Row};
 use thiserror::Error;
 
@@ -12,17 +12,31 @@ use crate::schema::{
     TableSchema, TableSummary,
 };
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
 #[derive(Debug, Error)]
 pub enum MysqlError {
     #[error("数据库错误: {0}")]
     Db(#[from] sqlx::Error),
+    #[error("{0}")]
+    Message(String),
 }
 
-/// 构建 MySQL 连接 URL（密码与标识符做百分号编码）
+/// 规范化主机：localhost → 127.0.0.1，避免 macOS 上 IPv6 优先导致久挂
+pub fn normalize_host(host: &str) -> &str {
+    if host.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1"
+    } else {
+        host
+    }
+}
+
+/// 构建 MySQL 连接 URL（密码与标识符做百分号编码；测试/日志用）
 pub fn connection_url(cfg: &ConnectionConfig, password_plain: &str, database: Option<&str>) -> String {
     let user = urlencoding::encode(&cfg.user);
     let pass = urlencoding::encode(password_plain);
-    let base = format!("mysql://{user}:{pass}@{}:{}/", cfg.host, cfg.port);
+    let host = normalize_host(&cfg.host);
+    let base = format!("mysql://{user}:{pass}@{host}:{}/", cfg.port);
     match database {
         Some(db) if !db.is_empty() => format!("{base}{}", urlencoding::encode(db)),
         _ => base,
@@ -33,18 +47,71 @@ fn quote_ident(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
+/// information_schema 在部分 MySQL/字符集下会以 VARBINARY 返回标识符，不能直接 get::<String>
+fn mysql_text(row: &MySqlRow, col: &str) -> Result<String, MysqlError> {
+    if let Ok(s) = row.try_get::<String, _>(col) {
+        return Ok(s);
+    }
+    if let Ok(bytes) = row.try_get::<Vec<u8>, _>(col) {
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    Err(MysqlError::Message(format!(
+        "无法解码列 `{col}`（既非 VARCHAR 也非 VARBINARY）"
+    )))
+}
+
+fn mysql_text_opt(row: &MySqlRow, col: &str) -> Result<Option<String>, MysqlError> {
+    match row.try_get::<Option<Vec<u8>>, _>(col) {
+        Ok(Some(bytes)) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Ok(None) => Ok(None),
+        Err(_) => match row.try_get::<Option<String>, _>(col) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(MysqlError::Db(e)),
+        },
+    }
+}
+
+fn connect_options(
+    cfg: &ConnectionConfig,
+    password_plain: &str,
+    database: Option<&str>,
+) -> MySqlConnectOptions {
+    let mut opts = MySqlConnectOptions::new()
+        .host(normalize_host(&cfg.host))
+        .port(cfg.port)
+        .username(&cfg.user)
+        .password(password_plain)
+        // 内网运维默认不走 SSL；Preferred 在部分环境会长时间卡住
+        .ssl_mode(MySqlSslMode::Disabled)
+        .charset("utf8mb4");
+    if let Some(db) = database {
+        if !db.is_empty() {
+            opts = opts.database(db);
+        }
+    }
+    opts
+}
+
 async fn open_pool(
     cfg: &ConnectionConfig,
     password_plain: &str,
     database: Option<&str>,
 ) -> Result<MySqlPool, MysqlError> {
-    let url = connection_url(cfg, password_plain, database);
-    let pool = MySqlPoolOptions::new()
+    let opts = connect_options(cfg, password_plain, database);
+    let connect = MySqlPoolOptions::new()
         .max_connections(2)
-        .acquire_timeout(Duration::from_secs(10))
-        .connect(&url)
-        .await?;
-    Ok(pool)
+        .acquire_timeout(CONNECT_TIMEOUT)
+        .connect_with(opts);
+    match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+        Ok(Ok(pool)) => Ok(pool),
+        Ok(Err(e)) => Err(MysqlError::Db(e)),
+        Err(_) => Err(MysqlError::Message(format!(
+            "连接 {}:{} 超时（{}s）。请确认主机/端口可达，或先点「测连通」",
+            normalize_host(&cfg.host),
+            cfg.port,
+            CONNECT_TIMEOUT.as_secs()
+        ))),
+    }
 }
 
 /// 测连通：能建立连接并执行 `SELECT 1`
@@ -82,16 +149,20 @@ pub async fn list_databases(
     password_plain: &str,
 ) -> Result<Vec<String>, MysqlError> {
     let pool = open_pool(conn_cfg, password_plain, None).await?;
+    // CAST 为 CHAR，并配合 mysql_text 兼容 VARBINARY 解码
     let rows = sqlx::query(
-        "SELECT SCHEMA_NAME AS name FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
+        "SELECT CAST(SCHEMA_NAME AS CHAR CHARACTER SET utf8mb4) AS name \
+         FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME",
     )
     .fetch_all(&pool)
     .await?;
-    let names = rows
-        .iter()
-        .map(|r| r.get::<String, _>("name"))
-        .filter(|n| !is_system_schema(n))
-        .collect();
+    let mut names = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let n = mysql_text(r, "name")?;
+        if !is_system_schema(&n) {
+            names.push(n);
+        }
+    }
     pool.close().await;
     Ok(names)
 }
@@ -105,8 +176,8 @@ pub async fn list_tables(
     let pool = open_pool(conn_cfg, password_plain, Some(database)).await?;
     let rows = sqlx::query(
         r#"
-        SELECT TABLE_NAME AS table_name,
-               IFNULL(TABLE_COMMENT, '') AS table_comment
+        SELECT CAST(TABLE_NAME AS CHAR CHARACTER SET utf8mb4) AS table_name,
+               CAST(IFNULL(TABLE_COMMENT, '') AS CHAR CHARACTER SET utf8mb4) AS table_comment
         FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = ?
           AND TABLE_TYPE = 'BASE TABLE'
@@ -117,7 +188,10 @@ pub async fn list_tables(
     .fetch_all(&pool)
     .await?;
 
-    let table_rows: Vec<TableRow> = rows.iter().map(map_table_row).collect();
+    let mut table_rows = Vec::with_capacity(rows.len());
+    for r in &rows {
+        table_rows.push(map_table_row(r)?);
+    }
     pool.close().await;
     Ok(tables_from_rows(&table_rows))
 }
@@ -133,7 +207,7 @@ pub async fn fetch_table_schema(
 
     let comment_row = sqlx::query(
         r#"
-        SELECT IFNULL(TABLE_COMMENT, '') AS table_comment
+        SELECT CAST(IFNULL(TABLE_COMMENT, '') AS CHAR CHARACTER SET utf8mb4) AS table_comment
         FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = ?
           AND TABLE_NAME = ?
@@ -150,16 +224,16 @@ pub async fn fetch_table_schema(
         pool.close().await;
         return Ok(None);
     };
-    let table_comment: String = comment_row.get("table_comment");
+    let table_comment = mysql_text(&comment_row, "table_comment")?;
 
     let col_rows = sqlx::query(
         r#"
-        SELECT COLUMN_NAME AS column_name,
-               COLUMN_TYPE AS column_type,
-               IS_NULLABLE AS is_nullable,
-               COLUMN_DEFAULT AS column_default,
-               IFNULL(COLUMN_COMMENT, '') AS column_comment,
-               IFNULL(EXTRA, '') AS extra
+        SELECT CAST(COLUMN_NAME AS CHAR CHARACTER SET utf8mb4) AS column_name,
+               CAST(COLUMN_TYPE AS CHAR CHARACTER SET utf8mb4) AS column_type,
+               CAST(IS_NULLABLE AS CHAR CHARACTER SET utf8mb4) AS is_nullable,
+               CAST(COLUMN_DEFAULT AS CHAR CHARACTER SET utf8mb4) AS column_default,
+               CAST(IFNULL(COLUMN_COMMENT, '') AS CHAR CHARACTER SET utf8mb4) AS column_comment,
+               CAST(IFNULL(EXTRA, '') AS CHAR CHARACTER SET utf8mb4) AS extra
         FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = ?
           AND TABLE_NAME = ?
@@ -170,12 +244,16 @@ pub async fn fetch_table_schema(
     .bind(table)
     .fetch_all(&pool)
     .await?;
-    let columns = columns_from_rows(&col_rows.iter().map(map_column_row).collect::<Vec<_>>());
+    let mut mapped_cols = Vec::with_capacity(col_rows.len());
+    for r in &col_rows {
+        mapped_cols.push(map_column_row(r)?);
+    }
+    let columns = columns_from_rows(&mapped_cols);
 
     let stats_rows = sqlx::query(
         r#"
-        SELECT INDEX_NAME AS index_name,
-               COLUMN_NAME AS column_name,
+        SELECT CAST(INDEX_NAME AS CHAR CHARACTER SET utf8mb4) AS index_name,
+               CAST(COLUMN_NAME AS CHAR CHARACTER SET utf8mb4) AS column_name,
                NON_UNIQUE AS non_unique,
                SEQ_IN_INDEX AS seq_in_index
         FROM information_schema.STATISTICS
@@ -188,7 +266,11 @@ pub async fn fetch_table_schema(
     .bind(table)
     .fetch_all(&pool)
     .await?;
-    let indexes = indexes_from_stats_rows(&stats_rows.iter().map(map_stats_row).collect::<Vec<_>>());
+    let mut mapped_stats = Vec::with_capacity(stats_rows.len());
+    for r in &stats_rows {
+        mapped_stats.push(map_stats_row(r)?);
+    }
+    let indexes = indexes_from_stats_rows(&mapped_stats);
 
     let show_sql = format!(
         "SHOW CREATE TABLE {}.{}",
@@ -196,10 +278,20 @@ pub async fn fetch_table_schema(
         quote_ident(table)
     );
     let create_row = sqlx::query(&show_sql).fetch_one(&pool).await?;
-    // MySQL 返回列名为 "Create Table"
-    let create_sql: String = create_row
-        .try_get("Create Table")
-        .or_else(|_| create_row.try_get::<String, _>(1))?;
+    // MySQL 返回列名为 "Create Table"；兼容 String / VARBINARY
+    let create_sql = match create_row.try_get::<String, _>("Create Table") {
+        Ok(s) => s,
+        Err(_) => match create_row.try_get::<Vec<u8>, _>("Create Table") {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            Err(_) => match create_row.try_get::<String, _>(1) {
+                Ok(s) => s,
+                Err(_) => {
+                    let b: Vec<u8> = create_row.try_get(1)?;
+                    String::from_utf8_lossy(&b).into_owned()
+                }
+            },
+        },
+    };
 
     pool.close().await;
     Ok(Some(TableSchema {
@@ -211,31 +303,34 @@ pub async fn fetch_table_schema(
     }))
 }
 
-fn map_table_row(r: &MySqlRow) -> TableRow {
-    TableRow {
-        table_name: r.get("table_name"),
-        table_comment: r.get("table_comment"),
-    }
+fn map_table_row(r: &MySqlRow) -> Result<TableRow, MysqlError> {
+    Ok(TableRow {
+        table_name: mysql_text(r, "table_name")?,
+        table_comment: mysql_text(r, "table_comment")?,
+    })
 }
 
-fn map_column_row(r: &MySqlRow) -> ColumnRow {
-    ColumnRow {
-        column_name: r.get("column_name"),
-        column_type: r.get("column_type"),
-        is_nullable: r.get("is_nullable"),
-        column_default: r.get::<Option<String>, _>("column_default"),
-        column_comment: r.get("column_comment"),
-        extra: r.get("extra"),
-    }
+fn map_column_row(r: &MySqlRow) -> Result<ColumnRow, MysqlError> {
+    Ok(ColumnRow {
+        column_name: mysql_text(r, "column_name")?,
+        column_type: mysql_text(r, "column_type")?,
+        is_nullable: mysql_text(r, "is_nullable")?,
+        column_default: mysql_text_opt(r, "column_default")?,
+        column_comment: mysql_text(r, "column_comment")?,
+        extra: mysql_text(r, "extra")?,
+    })
 }
 
-fn map_stats_row(r: &MySqlRow) -> StatsRow {
-    StatsRow {
-        index_name: r.get("index_name"),
-        column_name: r.get("column_name"),
-        non_unique: r.get::<i64, _>("non_unique"),
-        seq_in_index: r.get::<u32, _>("seq_in_index"),
-    }
+fn map_stats_row(r: &MySqlRow) -> Result<StatsRow, MysqlError> {
+    Ok(StatsRow {
+        index_name: mysql_text(r, "index_name")?,
+        column_name: mysql_text(r, "column_name")?,
+        non_unique: r.try_get::<i64, _>("non_unique").map_err(MysqlError::Db)?,
+        seq_in_index: r
+            .try_get::<u32, _>("seq_in_index")
+            .or_else(|_| r.try_get::<i64, _>("seq_in_index").map(|v| v as u32))
+            .map_err(MysqlError::Db)?,
+    })
 }
 
 #[cfg(test)]
@@ -273,7 +368,14 @@ mod tests {
     fn system_schemas_are_filtered() {
         assert!(is_system_schema("mysql"));
         assert!(is_system_schema("information_schema"));
-        assert!(!is_system_schema("order_2025_lemi"));
+        assert!(!is_system_schema("order_2025_demo"));
+    }
+
+    #[test]
+    fn normalize_localhost_to_loopback() {
+        assert_eq!(normalize_host("localhost"), "127.0.0.1");
+        assert_eq!(normalize_host("LOCALHOST"), "127.0.0.1");
+        assert_eq!(normalize_host("10.0.0.1"), "10.0.0.1");
     }
 
     /// 真连库冒烟；默认忽略，本地有 MySQL 时可 `cargo test -- --ignored`

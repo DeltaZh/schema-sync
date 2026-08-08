@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { askConfirm } from "../lib/confirmDialog";
 import {
   deleteConnection,
   listAllDatabases,
@@ -34,10 +35,24 @@ interface ConnNode {
   error: string;
 }
 
+/** 筛选后的库视图：tables 为 null 表示尚未加载 */
+interface FilteredDbView {
+  db: DbNode;
+  tables: TableSummary[] | null;
+  /** 因表名命中而展示时，即使未展开也列出表 */
+  revealTables: boolean;
+}
+
+interface FilteredConnView {
+  node: ConnNode;
+  databases: FilteredDbView[] | null;
+}
+
 const nodes = ref<ConnNode[]>([]);
 const status = ref("");
 const error = ref("");
 const selectedKey = ref("");
+const treeFilter = ref("");
 
 const dialogOpen = ref(false);
 const editingId = ref<string | null>(null);
@@ -58,6 +73,14 @@ const pickerLoading = ref(false);
 const pickerError = ref("");
 const pickerAll = ref<string[]>([]);
 const pickerSelected = ref<Set<string>>(new Set());
+const pickerFilter = ref("");
+
+/** 连接行右键 / 「⋯」菜单 */
+const connMenu = ref<{
+  x: number;
+  y: number;
+  node: ConnNode;
+} | null>(null);
 
 function selectionKey(s: TableSelection): string {
   return `${s.connectionId}/${s.database}/${s.table}`;
@@ -66,6 +89,80 @@ function selectionKey(s: TableSelection): string {
 function hasVisibleDbs(conn: ConnectionConfig): boolean {
   return (conn.visible_databases?.length ?? 0) > 0;
 }
+
+function includesIgnoreCase(haystack: string, needle: string): boolean {
+  return haystack.toLowerCase().includes(needle);
+}
+
+const filteredTree = computed((): FilteredConnView[] => {
+  const q = treeFilter.value.trim().toLowerCase();
+  if (!q) {
+    return nodes.value.map((node) => ({
+      node,
+      databases:
+        node.databases?.map((db) => ({
+          db,
+          tables: db.tables,
+          revealTables: false,
+        })) ?? null,
+    }));
+  }
+
+  const out: FilteredConnView[] = [];
+  for (const node of nodes.value) {
+    const connHit =
+      includesIgnoreCase(node.conn.name, q) ||
+      includesIgnoreCase(node.conn.host, q) ||
+      includesIgnoreCase(node.conn.remark ?? "", q);
+
+    if (!node.databases) {
+      if (connHit) out.push({ node, databases: null });
+      continue;
+    }
+
+    const dbs: FilteredDbView[] = [];
+    for (const db of node.databases) {
+      const dbHit = includesIgnoreCase(db.name, q);
+      if (dbHit) {
+        dbs.push({ db, tables: db.tables, revealTables: false });
+        continue;
+      }
+      if (db.tables) {
+        const tables = db.tables.filter(
+          (t) =>
+            includesIgnoreCase(t.name, q) ||
+            includesIgnoreCase(t.comment ?? "", q),
+        );
+        if (tables.length > 0) {
+          dbs.push({ db, tables, revealTables: true });
+        }
+      }
+    }
+
+    if (connHit && dbs.length === 0) {
+      // 仅连接命中：保留其下全部库
+      out.push({
+        node,
+        databases: node.databases.map((db) => ({
+          db,
+          tables: db.tables,
+          revealTables: false,
+        })),
+      });
+    } else if (dbs.length > 0) {
+      out.push({ node, databases: dbs });
+    }
+  }
+  return out;
+});
+
+const treeFilterActive = computed(() => treeFilter.value.trim().length > 0);
+
+const pickerFiltered = computed(() => {
+  const q = pickerFilter.value.trim().toLowerCase();
+  if (!q) return pickerAll.value;
+  return pickerAll.value.filter((name) => includesIgnoreCase(name, q));
+});
 
 async function reloadConnections() {
   error.value = "";
@@ -246,7 +343,12 @@ async function saveConnection() {
 }
 
 async function removeConnection(node: ConnNode) {
-  if (!confirm(`确定删除连接「${node.conn.name}」？`)) return;
+  const ok = await askConfirm(`确定删除连接「${node.conn.name}」？`, {
+    title: "删除连接",
+    confirmText: "删除",
+    danger: true,
+  });
+  if (!ok) return;
   error.value = "";
   try {
     await deleteConnection(node.conn.id);
@@ -285,19 +387,32 @@ async function openDbPicker(node: ConnNode) {
   pickerLoading.value = true;
   pickerError.value = "";
   pickerAll.value = [];
+  pickerFilter.value = "";
   pickerSelected.value = new Set(node.conn.visible_databases ?? []);
   try {
+    status.value = `正在拉取「${node.conn.name}」的库列表…`;
     const all = await listAllDatabases(node.conn.id);
     pickerAll.value = all;
     // 若尚未选择过，默认不勾选，由用户自选
     if ((node.conn.visible_databases?.length ?? 0) === 0) {
       pickerSelected.value = new Set();
     }
+    status.value = `已拉取 ${all.length} 个业务库，请勾选后保存`;
   } catch (e) {
-    pickerError.value = String(e);
+    pickerError.value = formatErr(e);
+    status.value = "";
   } finally {
     pickerLoading.value = false;
   }
+}
+
+function formatErr(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && "message" in e) {
+    return String((e as { message: unknown }).message);
+  }
+  return String(e);
 }
 
 function togglePickerDb(name: string) {
@@ -308,7 +423,10 @@ function togglePickerDb(name: string) {
 }
 
 function selectAllPicker() {
-  pickerSelected.value = new Set(pickerAll.value);
+  // 全选仅作用于当前筛出结果（已勾选的其它库保留）
+  const next = new Set(pickerSelected.value);
+  for (const name of pickerFiltered.value) next.add(name);
+  pickerSelected.value = next;
 }
 
 function clearPicker() {
@@ -343,8 +461,46 @@ async function savePicker() {
   }
 }
 
+function closeConnMenu() {
+  connMenu.value = null;
+}
+
+function openConnMenu(e: MouseEvent, node: ConnNode) {
+  e.preventDefault();
+  e.stopPropagation();
+  const pad = 8;
+  const menuW = 168;
+  const menuH = 220;
+  const x = Math.min(e.clientX, window.innerWidth - menuW - pad);
+  const y = Math.min(e.clientY, window.innerHeight - menuH - pad);
+  connMenu.value = { x: Math.max(pad, x), y: Math.max(pad, y), node };
+}
+
+function runConnMenu(action: (node: ConnNode) => void | Promise<void>) {
+  const node = connMenu.value?.node;
+  closeConnMenu();
+  if (!node) return;
+  void action(node);
+}
+
+function onGlobalPointerDown(e: PointerEvent) {
+  if (!connMenu.value) return;
+  const el = e.target;
+  if (el instanceof Element && el.closest(".ctx-menu")) return;
+  closeConnMenu();
+}
+
 onMounted(() => {
   void reloadConnections();
+  window.addEventListener("pointerdown", onGlobalPointerDown, true);
+  window.addEventListener("resize", closeConnMenu);
+  window.addEventListener("blur", closeConnMenu);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("pointerdown", onGlobalPointerDown, true);
+  window.removeEventListener("resize", closeConnMenu);
+  window.removeEventListener("blur", closeConnMenu);
 });
 
 defineExpose({ reloadConnections });
@@ -352,10 +508,28 @@ defineExpose({ reloadConnections });
 
 <template>
   <div class="panel">
+    <div class="brand-bar">
+      <img class="brand-logo" src="/app-icon.png" alt="" />
+      <div>
+        <div class="brand-title">结构同步</div>
+        <div class="brand-sub muted">多库表结构对齐</div>
+      </div>
+    </div>
+
     <div class="toolbar">
       <button type="button" class="btn primary" @click="openCreate">新建</button>
       <button type="button" class="btn" @click="reloadConnections">刷新</button>
       <span class="spacer" />
+    </div>
+
+    <div class="filter-bar">
+      <input
+        v-model="treeFilter"
+        class="filter-input"
+        type="search"
+        placeholder="筛选库 / 表…"
+        aria-label="筛选库或表"
+      />
     </div>
 
     <div v-if="error" class="toolbar error-text">{{ error }}</div>
@@ -364,17 +538,41 @@ defineExpose({ reloadConnections });
       <div v-if="nodes.length === 0" class="muted" style="padding: 10px">
         暂无连接，请点击「新建」添加
       </div>
+      <div
+        v-else-if="treeFilterActive && filteredTree.length === 0"
+        class="muted"
+        style="padding: 10px"
+      >
+        没有符合的库或表
+      </div>
 
-      <div v-for="node in nodes" :key="node.conn.id" class="tree-node">
-        <div class="tree-row" @click="toggleConnection(node)">
+      <div
+        v-for="view in filteredTree"
+        :key="view.node.conn.id"
+        class="tree-node"
+      >
+        <div
+          class="tree-row conn-row"
+          @click="toggleConnection(view.node)"
+          @contextmenu="openConnMenu($event, view.node)"
+        >
           <span class="tree-toggle">{{
-            node.loading ? "…" : node.expanded ? "▼" : "▶"
+            view.node.loading
+              ? "…"
+              : view.node.expanded || treeFilterActive
+                ? "▼"
+                : "▶"
           }}</span>
-          <span class="tree-label" :title="node.conn.remark || node.conn.host">
-            {{ node.conn.name }}
-            <span class="muted">({{ node.conn.host }}:{{ node.conn.port }})</span>
+          <span
+            class="tree-label"
+            :title="view.node.conn.remark || view.node.conn.host"
+          >
+            {{ view.node.conn.name }}
+            <span class="muted"
+              >({{ view.node.conn.host }}:{{ view.node.conn.port }})</span
+            >
             <span
-              v-if="!hasVisibleDbs(node.conn)"
+              v-if="!hasVisibleDbs(view.node.conn)"
               class="muted"
               style="margin-left: 6px"
               >未选库</span
@@ -383,68 +581,88 @@ defineExpose({ reloadConnections });
               v-else
               class="muted"
               style="margin-left: 6px"
-              >{{ node.conn.visible_databases.length }} 库</span
+              >{{ view.node.conn.visible_databases.length }} 库</span
             >
           </span>
-        </div>
-        <div class="toolbar" style="padding-left: 22px; background: transparent; border: none">
-          <button type="button" class="btn ghost" @click.stop="ping(node)">
-            测连通
-          </button>
-          <button type="button" class="btn ghost" @click.stop="openDbPicker(node)">
-            选择库
-          </button>
-          <button type="button" class="btn ghost" @click.stop="refreshNode(node)">
-            重载库
-          </button>
-          <button type="button" class="btn ghost" @click.stop="openEdit(node)">
-            编辑
-          </button>
           <button
             type="button"
-            class="btn ghost danger"
-            @click.stop="removeConnection(node)"
+            class="row-more"
+            title="连接操作"
+            aria-label="连接操作"
+            @click.stop="openConnMenu($event, view.node)"
           >
-            删除
+            ⋯
           </button>
         </div>
-        <div v-if="node.error" class="error-text" style="padding: 0 10px 6px 26px">
-          {{ node.error }}
+        <div
+          v-if="view.node.error"
+          class="error-text"
+          style="padding: 0 10px 6px 26px"
+        >
+          {{ view.node.error }}
         </div>
 
-        <div v-if="node.expanded" class="tree-children">
+        <div
+          v-if="view.node.expanded || treeFilterActive"
+          class="tree-children"
+        >
           <div
-            v-if="!hasVisibleDbs(node.conn)"
+            v-if="!hasVisibleDbs(view.node.conn)"
             class="muted"
             style="padding: 6px 10px"
           >
             尚未选择可见库。
-            <button type="button" class="btn ghost" @click="openDbPicker(node)">
+            <button
+              type="button"
+              class="btn ghost"
+              @click="openDbPicker(view.node)"
+            >
               选择库
             </button>
           </div>
-          <template v-else-if="node.databases">
-            <div v-for="db in node.databases" :key="db.name" class="tree-node">
-              <div class="tree-row" @click="toggleDatabase(node, db)">
+          <template v-else-if="view.databases">
+            <div
+              v-for="dbView in view.databases"
+              :key="dbView.db.name"
+              class="tree-node"
+            >
+              <div
+                class="tree-row"
+                @click="toggleDatabase(view.node, dbView.db)"
+              >
                 <span class="tree-toggle">{{
-                  db.loading ? "…" : db.expanded ? "▼" : "▶"
+                  dbView.db.loading
+                    ? "…"
+                    : dbView.db.expanded || dbView.revealTables
+                      ? "▼"
+                      : "▶"
                 }}</span>
-                <span class="tree-label">{{ db.name }}</span>
+                <span class="tree-label">{{ dbView.db.name }}</span>
               </div>
-              <div v-if="db.error" class="error-text" style="padding: 0 10px 6px 26px">
-                {{ db.error }}
+              <div
+                v-if="dbView.db.error"
+                class="error-text"
+                style="padding: 0 10px 6px 26px"
+              >
+                {{ dbView.db.error }}
               </div>
-              <div v-if="db.expanded && db.tables" class="tree-children">
+              <div
+                v-if="
+                  (dbView.db.expanded || dbView.revealTables) &&
+                  dbView.tables
+                "
+                class="tree-children"
+              >
                 <div
-                  v-for="table in db.tables"
+                  v-for="table in dbView.tables"
                   :key="table.name"
                   class="tree-row"
                   :class="{
                     active:
                       selectedKey ===
-                      `${node.conn.id}/${db.name}/${table.name}`,
+                      `${view.node.conn.id}/${dbView.db.name}/${table.name}`,
                   }"
-                  @click="selectTable(node, db, table)"
+                  @click="selectTable(view.node, dbView.db, table)"
                 >
                   <span class="tree-toggle">·</span>
                   <span class="tree-label">
@@ -455,7 +673,7 @@ defineExpose({ reloadConnections });
                   </span>
                 </div>
                 <div
-                  v-if="db.tables.length === 0"
+                  v-if="dbView.tables.length === 0"
                   class="muted"
                   style="padding: 4px 10px"
                 >
@@ -464,7 +682,7 @@ defineExpose({ reloadConnections });
               </div>
             </div>
             <div
-              v-if="node.databases.length === 0"
+              v-if="view.databases.length === 0"
               class="muted"
               style="padding: 4px 10px"
             >
@@ -476,6 +694,56 @@ defineExpose({ reloadConnections });
     </div>
 
     <div class="status-bar">{{ status || "就绪" }}</div>
+
+    <div
+      v-if="connMenu"
+      class="ctx-menu"
+      role="menu"
+      :style="{ left: `${connMenu.x}px`, top: `${connMenu.y}px` }"
+      @pointerdown.stop
+    >
+      <button
+        type="button"
+        class="ctx-item"
+        role="menuitem"
+        @click="runConnMenu(ping)"
+      >
+        测连通
+      </button>
+      <button
+        type="button"
+        class="ctx-item"
+        role="menuitem"
+        @click="runConnMenu(openDbPicker)"
+      >
+        选择库
+      </button>
+      <button
+        type="button"
+        class="ctx-item"
+        role="menuitem"
+        @click="runConnMenu(refreshNode)"
+      >
+        重载库列表
+      </button>
+      <button
+        type="button"
+        class="ctx-item"
+        role="menuitem"
+        @click="runConnMenu(openEdit)"
+      >
+        编辑连接
+      </button>
+      <div class="ctx-sep" />
+      <button
+        type="button"
+        class="ctx-item danger"
+        role="menuitem"
+        @click="runConnMenu(removeConnection)"
+      >
+        删除连接
+      </button>
+    </div>
 
     <div
       v-if="dialogOpen"
@@ -548,22 +816,47 @@ defineExpose({ reloadConnections });
         </p>
         <div v-if="pickerError" class="error-text" style="margin-bottom: 8px">
           {{ pickerError }}
+          <button
+            v-if="pickerNode && !pickerLoading"
+            type="button"
+            class="btn ghost"
+            style="margin-left: 8px"
+            @click="openDbPicker(pickerNode)"
+          >
+            重试
+          </button>
         </div>
-        <div v-if="pickerLoading" class="muted">正在从服务器拉取库列表…</div>
+        <div v-if="pickerLoading" class="muted">
+          正在从服务器拉取库列表（最多约 15 秒）…
+        </div>
         <template v-else>
+          <div class="filter-bar" style="padding: 0 0 8px; border: none">
+            <input
+              v-model="pickerFilter"
+              class="filter-input"
+              type="search"
+              placeholder="筛选库名…"
+              aria-label="筛选库名"
+            />
+          </div>
           <div class="toolbar" style="border: none; padding: 0 0 8px">
             <button type="button" class="btn ghost" @click="selectAllPicker">
-              全选
+              全选当前结果
             </button>
             <button type="button" class="btn ghost" @click="clearPicker">
               清空
             </button>
             <span class="spacer" />
-            <span class="muted">已选 {{ pickerSelected.size }} / {{ pickerAll.length }}</span>
+            <span class="muted"
+              >已选 {{ pickerSelected.size }} / 共 {{ pickerAll.length }}
+              <template v-if="pickerFilter.trim()"
+                >（显示 {{ pickerFiltered.length }}）</template
+              ></span
+            >
           </div>
           <div class="picker-list">
             <label
-              v-for="name in pickerAll"
+              v-for="name in pickerFiltered"
               :key="name"
               class="picker-item"
             >
@@ -576,6 +869,12 @@ defineExpose({ reloadConnections });
             </label>
             <div v-if="pickerAll.length === 0" class="muted">
               （服务器上没有可展示的业务库）
+            </div>
+            <div
+              v-else-if="pickerFiltered.length === 0"
+              class="muted"
+            >
+              没有符合的库名
             </div>
           </div>
         </template>

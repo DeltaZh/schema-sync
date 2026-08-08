@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { askConfirm } from "../lib/confirmDialog";
 import {
   expandRuleTargets,
   listRules,
@@ -17,11 +18,28 @@ const props = defineProps<{
   connections: ConnectionConfig[];
 }>();
 
-const ALL_PARTS: { kind: PartKind; label: string }[] = [
-  { kind: "tenant", label: "租户" },
-  { kind: "year", label: "年份" },
-  { kind: "shard", label: "分片" },
-];
+const PLACEHOLDER_RE = /\{(年份|租户|分片|year|tenant|shard)\}/gi;
+
+const PART_META: Record<
+  PartKind,
+  { label: string; placeholder: string; hint: string }
+> = {
+  year: {
+    label: "年份取值",
+    placeholder: "如 2025\n2026",
+    hint: "对应模板中的 {年份}",
+  },
+  tenant: {
+    label: "租户取值",
+    placeholder: "如 demo\nacme",
+    hint: "对应模板中的 {租户}",
+  },
+  shard: {
+    label: "分片取值",
+    placeholder: "如 0\n1\n2",
+    hint: "对应模板中的 {分片}",
+  },
+};
 
 const rules = ref<NamingRule[]>([]);
 const selectedId = ref<string | null>(null);
@@ -31,8 +49,8 @@ const saving = ref(false);
 const expandPreview = ref<RuleTarget[]>([]);
 const expandBusy = ref(false);
 
-const selected = computed(() =>
-  rules.value.find((r) => r.id === selectedId.value) ?? null,
+const selected = computed(
+  () => rules.value.find((r) => r.id === selectedId.value) ?? null,
 );
 
 const tenantsText = ref("");
@@ -42,13 +60,47 @@ const shardsText = ref("");
 function emptyRule(): NamingRule {
   return {
     id: newId("rule"),
-    logical_name: "",
-    parts_order: [],
+    display_name: "",
+    pattern: "order_{年份}_{租户}",
+    logical_name: "order",
+    parts_order: ["year", "tenant"],
     tenants: [],
     years: [],
     shards: [],
     connection_ids: [],
   };
+}
+
+function normalizePlaceholderToken(raw: string): PartKind | null {
+  const t = raw.toLowerCase();
+  if (t === "year" || raw === "年份") return "year";
+  if (t === "tenant" || raw === "租户") return "tenant";
+  if (t === "shard" || raw === "分片") return "shard";
+  return null;
+}
+
+/** 模板中按出现顺序去重后的占位符 */
+function usedParts(pattern: string): PartKind[] {
+  const seen = new Set<PartKind>();
+  const out: PartKind[] = [];
+  const re = new RegExp(PLACEHOLDER_RE.source, "gi");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(pattern)) !== null) {
+    const kind = normalizePlaceholderToken(m[1]);
+    if (kind && !seen.has(kind)) {
+      seen.add(kind);
+      out.push(kind);
+    }
+  }
+  return out;
+}
+
+const selectedUsedParts = computed(() =>
+  selected.value ? usedParts(selected.value.pattern) : [],
+);
+
+function ruleTitle(rule: NamingRule): string {
+  return rule.display_name || rule.pattern || rule.logical_name || "(未命名)";
 }
 
 function syncListEditors(rule: NamingRule | null) {
@@ -73,6 +125,19 @@ function applyListEditors(rule: NamingRule) {
   rule.tenants = parseLines(tenantsText.value);
   rule.years = parseLines(yearsText.value);
   rule.shards = parseLines(shardsText.value);
+  rule.parts_order = usedParts(rule.pattern);
+}
+
+function textForPart(kind: PartKind): string {
+  if (kind === "tenant") return tenantsText.value;
+  if (kind === "year") return yearsText.value;
+  return shardsText.value;
+}
+
+function setTextForPart(kind: PartKind, value: string) {
+  if (kind === "tenant") tenantsText.value = value;
+  else if (kind === "year") yearsText.value = value;
+  else shardsText.value = value;
 }
 
 async function reload() {
@@ -96,49 +161,23 @@ async function reload() {
 
 function addRule() {
   const rule = emptyRule();
-  rule.logical_name = "new_db";
+  rule.display_name = "新规则";
   rules.value.push(rule);
   selectedId.value = rule.id;
   status.value = "已新增规则（尚未保存）";
 }
 
-function removeSelected() {
+async function removeSelected() {
   if (!selected.value) return;
-  if (!confirm(`确定删除规则「${selected.value.logical_name || selected.value.id}」？`)) {
-    return;
-  }
+  const ok = await askConfirm(`确定删除规则「${ruleTitle(selected.value)}」？`, {
+    title: "删除规则",
+    confirmText: "删除",
+    danger: true,
+  });
+  if (!ok) return;
   rules.value = rules.value.filter((r) => r.id !== selectedId.value);
   selectedId.value = rules.value[0]?.id ?? null;
   status.value = "已从列表移除（需点保存才落盘）";
-}
-
-function togglePart(kind: PartKind, enabled: boolean) {
-  const rule = selected.value;
-  if (!rule) return;
-  if (enabled) {
-    if (!rule.parts_order.includes(kind)) {
-      rule.parts_order.push(kind);
-    }
-  } else {
-    rule.parts_order = rule.parts_order.filter((p) => p !== kind);
-  }
-}
-
-function movePart(kind: PartKind, delta: -1 | 1) {
-  const rule = selected.value;
-  if (!rule) return;
-  const idx = rule.parts_order.indexOf(kind);
-  if (idx < 0) return;
-  const next = idx + delta;
-  if (next < 0 || next >= rule.parts_order.length) return;
-  const arr = [...rule.parts_order];
-  const [item] = arr.splice(idx, 1);
-  arr.splice(next, 0, item);
-  rule.parts_order = arr;
-}
-
-function partLabel(kind: PartKind): string {
-  return ALL_PARTS.find((p) => p.kind === kind)?.label ?? kind;
 }
 
 function toggleConnection(id: string, checked: boolean) {
@@ -161,10 +200,15 @@ async function persist() {
       applyListEditors(selected.value);
     }
     for (const r of rules.value) {
-      if (!r.logical_name.trim()) {
-        throw new Error(`规则 ${r.id} 缺少逻辑名`);
+      r.pattern = r.pattern.trim();
+      r.display_name = r.display_name.trim();
+      if (!r.pattern) {
+        throw new Error(`请为规则填写库名模板（如 order_{年份}_{租户}）`);
       }
-      r.logical_name = r.logical_name.trim();
+      if (!r.display_name) {
+        r.display_name = r.pattern;
+      }
+      r.parts_order = usedParts(r.pattern);
     }
     await saveRules(rules.value);
     status.value = "规则已保存";
@@ -244,8 +288,10 @@ onMounted(() => {
           :class="{ active: rule.id === selectedId }"
           @click="selectedId = rule.id"
         >
-          <div>{{ rule.logical_name || "(未命名)" }}</div>
-          <div class="muted" style="font-size: 11px">{{ rule.id }}</div>
+          <div>{{ ruleTitle(rule) }}</div>
+          <div class="muted" style="font-size: 11px; font-family: var(--mono)">
+            {{ rule.pattern || "（无模板）" }}
+          </div>
         </button>
         <div v-if="rules.length === 0" class="muted" style="padding: 10px">
           暂无规则
@@ -254,93 +300,65 @@ onMounted(() => {
 
       <div v-if="selected" class="rules-editor">
         <div class="form-grid" style="max-width: none">
-          <label for="rule-logical">逻辑名</label>
+          <label for="rule-display">显示名称</label>
           <input
-            id="rule-logical"
-            v-model="selected.logical_name"
+            id="rule-display"
+            v-model="selected.display_name"
             class="field"
-            placeholder="如 order"
+            placeholder="如 乐米订单（按年）"
           />
 
-          <label>部件顺序</label>
-          <div class="parts-order">
-            <p class="muted" style="margin: 0">
-              勾选后参与库名拼接；可用上下调整顺序（逻辑名固定在前）
+          <label for="rule-pattern">库名模板</label>
+          <div>
+            <input
+              id="rule-pattern"
+              v-model="selected.pattern"
+              class="field"
+              style="font-family: var(--mono)"
+              placeholder="如 order_{年份}_{租户}"
+            />
+            <p class="muted" style="margin: 6px 0 0; font-size: 12px">
+              连接符直接写在模板里。可用占位符：
+              <code>{年份}</code>、<code>{租户}</code>、<code>{分片}</code>
+              （也支持 year / tenant / shard）
             </p>
-            <label
-              v-for="part in ALL_PARTS"
-              :key="part.kind"
-              class="part-row"
+            <p
+              v-if="selected.pattern.trim()"
+              class="muted"
+              style="margin: 4px 0 0; font-size: 12px"
             >
-              <input
-                type="checkbox"
-                :checked="selected.parts_order.includes(part.kind)"
-                @change="
-                  togglePart(
-                    part.kind,
-                    ($event.target as HTMLInputElement).checked,
+              预览形态：
+              <code>{{ selected.pattern.trim() }}</code>
+            </p>
+          </div>
+
+          <template v-for="kind in selectedUsedParts" :key="kind">
+            <label :for="`rule-${kind}`">{{ PART_META[kind].label }}</label>
+            <div>
+              <textarea
+                :id="`rule-${kind}`"
+                class="textarea"
+                :placeholder="PART_META[kind].placeholder"
+                :value="textForPart(kind)"
+                @input="
+                  setTextForPart(
+                    kind,
+                    ($event.target as HTMLTextAreaElement).value,
                   )
                 "
               />
-              <span>{{ part.label }}（{{ part.kind }}）</span>
-              <span class="part-actions">
-                <button
-                  type="button"
-                  class="btn ghost"
-                  :disabled="!selected.parts_order.includes(part.kind)"
-                  @click.prevent="movePart(part.kind, -1)"
-                >
-                  上移
-                </button>
-                <button
-                  type="button"
-                  class="btn ghost"
-                  :disabled="!selected.parts_order.includes(part.kind)"
-                  @click.prevent="movePart(part.kind, 1)"
-                >
-                  下移
-                </button>
-              </span>
-            </label>
-            <div class="chip-row">
-              <span class="muted">当前顺序：</span>
-              <span class="chip">逻辑名</span>
-              <span
-                v-for="kind in selected.parts_order"
-                :key="kind"
-                class="chip"
-              >
-                {{ partLabel(kind) }}
-              </span>
-              <span v-if="selected.parts_order.length === 0" class="muted"
-                >（仅逻辑名）</span
-              >
+              <p class="muted" style="margin: 4px 0 0; font-size: 12px">
+                {{ PART_META[kind].hint }}；每行一个，或逗号分隔
+              </p>
             </div>
-          </div>
+          </template>
 
-          <label for="rule-tenants">租户列表</label>
-          <textarea
-            id="rule-tenants"
-            v-model="tenantsText"
-            class="textarea"
-            placeholder="每行一个，或逗号分隔"
-          />
-
-          <label for="rule-years">年份列表</label>
-          <textarea
-            id="rule-years"
-            v-model="yearsText"
-            class="textarea"
-            placeholder="如 2024&#10;2025"
-          />
-
-          <label for="rule-shards">分片列表</label>
-          <textarea
-            id="rule-shards"
-            v-model="shardsText"
-            class="textarea"
-            placeholder="如 0&#10;1&#10;2"
-          />
+          <template v-if="selectedUsedParts.length === 0">
+            <label>取值</label>
+            <p class="muted" style="margin: 0">
+              当前模板没有占位符，将只生成一个固定库名。
+            </p>
+          </template>
 
           <label>绑定连接</label>
           <div class="checkbox-list">
@@ -356,7 +374,6 @@ onMounted(() => {
                 "
               />
               <span>{{ conn.name }}</span>
-              <span class="muted">({{ conn.id }})</span>
             </label>
             <p v-if="connections.length === 0" class="muted">
               暂无连接，请先在左侧新建
@@ -364,7 +381,15 @@ onMounted(() => {
           </div>
         </div>
 
-        <div class="toolbar" style="margin-top: 12px; border: none; background: transparent; padding: 0">
+        <div
+          class="toolbar"
+          style="
+            margin-top: 12px;
+            border: none;
+            background: transparent;
+            padding: 0;
+          "
+        >
           <button
             type="button"
             class="btn"
@@ -383,7 +408,11 @@ onMounted(() => {
           </button>
         </div>
 
-        <div v-if="expandPreview.length" class="section-block" style="margin-top: 12px">
+        <div
+          v-if="expandPreview.length"
+          class="section-block"
+          style="margin-top: 12px"
+        >
           <h3 class="section-title">展开结果（{{ expandPreview.length }}）</h3>
           <table class="data-table">
             <thead>
@@ -396,7 +425,9 @@ onMounted(() => {
             <tbody>
               <tr v-for="(t, i) in expandPreview" :key="i">
                 <td>{{ connName(t.connection_id) }}</td>
-                <td><code>{{ t.database }}</code></td>
+                <td>
+                  <code>{{ t.database }}</code>
+                </td>
                 <td>
                   <span v-if="t.exists === true" class="ok-text">存在</span>
                   <span v-else-if="t.exists === false" class="error-text"

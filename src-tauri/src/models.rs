@@ -45,10 +45,18 @@ impl ConnectionConfig {
     }
 }
 
-/// 可组合命名规则
+/// 可组合命名规则（以库名模板为主）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct NamingRule {
     pub id: String,
+    /// 左侧列表显示名；空则回退为 pattern
+    #[serde(default)]
+    pub display_name: String,
+    /// 库名模板，如 `order_{年份}_{租户}`；连接符写在模板内
+    #[serde(default)]
+    pub pattern: String,
+    /// 兼容旧配置；pattern 为空时与 parts_order 一起推导模板
+    #[serde(default)]
     pub logical_name: String,
     #[serde(default)]
     pub parts_order: Vec<PartKind>,

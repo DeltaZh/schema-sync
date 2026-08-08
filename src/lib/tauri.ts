@@ -3,6 +3,7 @@ import type {
   BaselineExecuteRequest,
   BaselineScanRequest,
   BaselineScanResponse,
+  SuggestRuleResponse,
   ConnectionConfig,
   DdlExecuteRequest,
   DdlPreviewRequest,
@@ -41,14 +42,50 @@ export function setVisibleDatabases(
   return invoke("set_visible_databases", { id, databases });
 }
 
+/** 带超时的 invoke，避免 UI 永久停在 loading */
+async function invokeWithTimeout<T>(
+  cmd: string,
+  args: Record<string, unknown>,
+  ms: number,
+  timeoutMessage: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      invoke<T>(cmd, args),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** 树展示用：仅返回已选可见库 */
 export function listDatabases(connectionId: string): Promise<string[]> {
-  return invoke("list_databases", { connectionId });
+  if (!connectionId) {
+    return Promise.reject(new Error("连接 id 为空"));
+  }
+  return invokeWithTimeout<string[]>(
+    "list_databases",
+    { connectionId },
+    15000,
+    "拉取库列表超时（15s）。请确认 MySQL 可连，并使用 npm run tauri dev 启动",
+  );
 }
 
 /** 选择对话框用：服务器上全部业务库 */
 export function listAllDatabases(connectionId: string): Promise<string[]> {
-  return invoke("list_all_databases", { connectionId });
+  if (!connectionId) {
+    return Promise.reject(new Error("连接 id 为空"));
+  }
+  return invokeWithTimeout<string[]>(
+    "list_all_databases",
+    { connectionId },
+    15000,
+    "拉取库列表超时（15s）。请确认 MySQL 可连，并使用 npm run tauri dev 启动（勿只用 Vite）",
+  );
 }
 
 export function listTables(
@@ -80,10 +117,20 @@ export function expandRuleTargets(
   return invoke("expand_rule_targets", { req });
 }
 
+export function suggestRuleForDatabase(
+  database: string,
+): Promise<SuggestRuleResponse> {
+  return invoke("suggest_rule_for_database", { database });
+}
+
 export function baselineScan(
   req: BaselineScanRequest,
 ): Promise<BaselineScanResponse> {
   return invoke("baseline_scan", { req });
+}
+
+export function cancelBaselineScan(jobId: string): Promise<boolean> {
+  return invoke("cancel_baseline_scan", { jobId });
 }
 
 export function baselineExecute(

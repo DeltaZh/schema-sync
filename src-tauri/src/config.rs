@@ -212,9 +212,11 @@ mod tests {
             connections: vec![],
             rules: vec![NamingRule {
                 id: "r1".into(),
+                display_name: "订单库".into(),
+                pattern: "order_{租户}_{年份}_{分片}".into(),
                 logical_name: "order".into(),
                 parts_order: vec![PartKind::Tenant, PartKind::Year, PartKind::Shard],
-                tenants: vec!["lemi".into()],
+                tenants: vec!["demo".into()],
                 years: vec!["2025".into()],
                 shards: vec!["1".into()],
                 connection_ids: vec!["c1".into()],

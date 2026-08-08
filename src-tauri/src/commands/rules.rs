@@ -8,11 +8,59 @@ use tauri::State;
 use crate::config::ConfigStore;
 use crate::models::{AppConfig, NamingRule};
 use crate::mysql;
-use crate::naming::expand_database_names;
+use crate::naming::{expand_database_names, suggest_best_rule};
 use crate::preview_cache::RuleTarget;
 
 use super::state::AppState;
 use super::util::{decrypt_password, find_connection, same_target};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestRuleResponse {
+    pub rule_id: Option<String>,
+    pub display_name: String,
+    pub pattern: String,
+    /// 命中的规则数量（>1 表示有歧义，已按分数选最佳）
+    pub match_count: usize,
+}
+
+/// 根据基准库名自动匹配命名规则
+#[tauri::command]
+pub fn suggest_rule_for_database(
+    state: State<'_, AppState>,
+    database: String,
+) -> Result<SuggestRuleResponse, String> {
+    let db = database.trim();
+    if db.is_empty() {
+        return Ok(SuggestRuleResponse {
+            rule_id: None,
+            display_name: String::new(),
+            pattern: String::new(),
+            match_count: 0,
+        });
+    }
+    let config = state.config.lock().map_err(|e| e.to_string())?;
+    let rules: Vec<NamingRule> = config
+        .rules
+        .iter()
+        .cloned()
+        .map(crate::naming::normalize_rule)
+        .collect();
+    let (best, count) = suggest_best_rule(&rules, db);
+    Ok(match best {
+        Some(r) => SuggestRuleResponse {
+            rule_id: Some(r.id.clone()),
+            display_name: r.display_name.clone(),
+            pattern: r.pattern.clone(),
+            match_count: count,
+        },
+        None => SuggestRuleResponse {
+            rule_id: None,
+            display_name: String::new(),
+            pattern: String::new(),
+            match_count: 0,
+        },
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExpandRuleTargetsRequest {
@@ -168,13 +216,27 @@ pub fn keep_targets_in_sets(
 #[tauri::command]
 pub fn list_rules(state: State<'_, AppState>) -> Result<Vec<NamingRule>, String> {
     let config = state.config.lock().map_err(|e| e.to_string())?;
-    Ok(config.rules.clone())
+    Ok(config
+        .rules
+        .iter()
+        .cloned()
+        .map(crate::naming::normalize_rule)
+        .collect())
 }
 
 #[tauri::command]
 pub fn save_rules(state: State<'_, AppState>, rules: Vec<NamingRule>) -> Result<(), String> {
     let mut config = state.config.lock().map_err(|e| e.to_string())?;
-    config.rules = rules;
+    let normalized: Vec<NamingRule> = rules
+        .into_iter()
+        .map(crate::naming::normalize_rule)
+        .collect();
+    for r in &normalized {
+        if r.pattern.trim().is_empty() {
+            return Err(format!("规则 {} 缺少库名模板", r.id));
+        }
+    }
+    config.rules = normalized;
     state.store.save(config.clone()).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -214,9 +276,11 @@ mod tests {
     fn sample_rule() -> NamingRule {
         NamingRule {
             id: "r1".into(),
+            display_name: "订单库".into(),
+            pattern: "order_{租户}".into(),
             logical_name: "order".into(),
             parts_order: vec![PartKind::Tenant],
-            tenants: vec!["lemi".into(), "yr".into()],
+            tenants: vec!["demo".into(), "acme".into()],
             years: vec![],
             shards: vec![],
             connection_ids: vec!["c1".into(), "c2".into()],
@@ -242,16 +306,16 @@ mod tests {
         let rule = sample_rule();
         let exclude = vec![RuleTarget {
             connection_id: "c1".into(),
-            database: "order_lemi".into(),
+            database: "order_demo".into(),
             exists: None,
         }];
         let targets = expand_targets_offline(&rule, &exclude);
-        assert_eq!(targets.len(), 3); // c1/yr + c2/lemi + c2/yr
+        assert_eq!(targets.len(), 3); // c1/acme + c2/demo + c2/acme
         assert!(!targets.iter().any(|t| {
-            t.connection_id == "c1" && t.database == "order_lemi"
+            t.connection_id == "c1" && t.database == "order_demo"
         }));
         assert!(targets.iter().any(|t| {
-            t.connection_id == "c2" && t.database == "order_lemi"
+            t.connection_id == "c2" && t.database == "order_demo"
         }));
     }
 
@@ -273,7 +337,7 @@ mod tests {
         let targets = vec![
             RuleTarget {
                 connection_id: "c1".into(),
-                database: "order_lemi".into(),
+                database: "order_demo".into(),
                 exists: None,
             },
             RuleTarget {
@@ -283,19 +347,19 @@ mod tests {
             },
             RuleTarget {
                 connection_id: "c2".into(),
-                database: "order_lemi".into(),
+                database: "order_demo".into(),
                 exists: None,
             },
         ];
         let mut sets = HashMap::new();
         sets.insert(
             "c1".into(),
-            HashSet::from(["order_lemi".into()]),
+            HashSet::from(["order_demo".into()]),
         );
         // c2 完全无库集合 → 全部跳过
         let (kept, warnings) = keep_targets_in_sets(targets, &sets);
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].database, "order_lemi");
+        assert_eq!(kept[0].database, "order_demo");
         assert_eq!(kept[0].exists, Some(true));
         assert_eq!(warnings.len(), 2);
     }

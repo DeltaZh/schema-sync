@@ -1,5 +1,7 @@
 //! 库表浏览
 
+use std::time::Duration;
+
 use tauri::State;
 
 use crate::mysql;
@@ -8,11 +10,30 @@ use crate::schema::{TableSchema, TableSummary};
 use super::state::AppState;
 use super::util::{decrypt_password, find_connection};
 
+const LIST_DB_TIMEOUT: Duration = Duration::from_secs(12);
+
+async fn list_databases_timed(
+    conn: &crate::models::ConnectionConfig,
+    password: &str,
+) -> Result<Vec<String>, String> {
+    match tokio::time::timeout(LIST_DB_TIMEOUT, mysql::list_databases(conn, password)).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!(
+            "拉取库列表超时（{}s）。请检查主机/端口/账号，或先点「测连通」",
+            LIST_DB_TIMEOUT.as_secs()
+        )),
+    }
+}
+
 #[tauri::command]
 pub async fn list_databases(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<Vec<String>, String> {
+    if connection_id.trim().is_empty() {
+        return Err("connectionId 为空，无法拉取库列表".into());
+    }
     let (conn, password, visible) = {
         let config = state.config.lock().map_err(|e| e.to_string())?;
         let conn = find_connection(&config, &connection_id)?.clone();
@@ -24,9 +45,7 @@ pub async fn list_databases(
     if visible.is_empty() {
         return Ok(Vec::new());
     }
-    let all = mysql::list_databases(&conn, &password)
-        .await
-        .map_err(|e| e.to_string())?;
+    let all = list_databases_timed(&conn, &password).await?;
     Ok(filter_visible_databases(&all, &visible))
 }
 
@@ -36,15 +55,20 @@ pub async fn list_all_databases(
     state: State<'_, AppState>,
     connection_id: String,
 ) -> Result<Vec<String>, String> {
+    if connection_id.trim().is_empty() {
+        return Err("connectionId 为空，无法拉取库列表".into());
+    }
     let (conn, password) = {
         let config = state.config.lock().map_err(|e| e.to_string())?;
         let conn = find_connection(&config, &connection_id)?.clone();
         let password = decrypt_password(&state.store, &conn)?;
         (conn, password)
     };
-    mysql::list_databases(&conn, &password)
-        .await
-        .map_err(|e| e.to_string())
+    eprintln!(
+        "[schema-sync] list_all_databases conn={} host={}:{}",
+        conn.id, conn.host, conn.port
+    );
+    list_databases_timed(&conn, &password).await
 }
 
 #[tauri::command]

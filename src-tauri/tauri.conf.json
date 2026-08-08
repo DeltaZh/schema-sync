@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Schema Sync",
+        "title": "结构同步",
         "width": 1100,
         "height": 760
       }

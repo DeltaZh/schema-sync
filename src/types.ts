@@ -17,6 +17,11 @@ export interface ConnectionConfig {
 
 export interface NamingRule {
   id: string;
+  /** 列表显示名 */
+  display_name: string;
+  /** 库名模板，如 order_{年份}_{租户} */
+  pattern: string;
+  /** 兼容旧字段；可由模板推导 */
   logical_name: string;
   parts_order: PartKind[];
   tenants: string[];
@@ -97,9 +102,15 @@ export interface DiffItem {
   connection_id: string;
   database: string;
   table: string;
+  /** 对象名（列/索引/表） */
+  object_name?: string;
   title: string;
   /** 人类可读说明，含注释信息 */
   detail: string;
+  /** 左侧：基准侧对照 */
+  baseline_view?: string;
+  /** 右侧：目标侧对照 */
+  target_view?: string;
   /** 仅供预览；执行只认服务端缓存 id */
   sql: string;
   selected_default: boolean;
@@ -109,6 +120,13 @@ export interface ExecResult {
   diff_id: string;
   ok: boolean;
   error: string | null;
+  connection_id?: string;
+  connection_name?: string;
+  database?: string;
+  /** 人类可读说明 */
+  summary?: string;
+  /** 语句摘要 */
+  sql_preview?: string;
 }
 
 export interface BaselineScanRequest {
@@ -117,12 +135,29 @@ export interface BaselineScanRequest {
   tables: string[];
   rule_id: string;
   exclude_targets?: RuleTarget[];
+  /** 进度/取消用任务 id */
+  job_id?: string;
 }
 
 export interface BaselineScanResponse {
   scan_id: string;
   items: DiffItem[];
   warnings?: string[];
+  cancelled?: boolean;
+}
+
+export interface BaselineScanProgress {
+  job_id: string;
+  done: number;
+  total: number;
+  message: string;
+}
+
+export interface SuggestRuleResponse {
+  rule_id: string | null;
+  display_name: string;
+  pattern: string;
+  match_count: number;
 }
 
 export interface BaselineExecuteRequest {
@@ -140,6 +175,9 @@ export interface DdlPreviewRequest {
 export interface DdlPreviewResponse {
   preview_id: string;
   statements: string[];
+  /** 与 statements 等长 */
+  statement_high_risk?: boolean[];
+  has_high_risk?: boolean;
   targets: RuleTarget[];
   warnings?: string[];
 }
