@@ -1,12 +1,35 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies & build
+node_modules
+dist
+dist-ssr
+*.local
+src-tauri/target
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# App data / secrets（本机配置与主密钥，禁止入库）
 .schema-sync.key
 config.yaml
-__pycache__/
-*.pyc
-*.egg-info/
-.venv/
-backend/.venv/
-frontend/node_modules/
-frontend/dist/
-.DS_Store
 data/
 *.log
+
+# SDD 运行时账本（本地）
+.superpowers/
