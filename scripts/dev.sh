@@ -29,6 +29,7 @@ npm run dev &
 FRONTEND_PID=$!
 
 echo "后端: http://127.0.0.1:8787  前端: http://127.0.0.1:5173（Vite 代理 /api）"
+echo "安全：仅环回；/api 会话加密；执行凭 scan_id（见 README 安全模型）"
 echo "按 Ctrl+C 停止"
 
 wait

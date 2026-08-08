@@ -16,6 +16,7 @@ const templateInstanceId = ref('')
 const templateDatabase = ref('')
 const databases = ref<string[]>([])
 const items = ref<DiffItem[]>([])
+const scanId = ref('')
 const scanErrors = ref<ScanError[]>([])
 const selected = ref<Set<string>>(new Set())
 const stopOnError = ref(true)
@@ -106,6 +107,7 @@ async function loadDatabases() {
 
 watch(groupId, () => {
   items.value = []
+  scanId.value = ''
   scanErrors.value = []
   selected.value = new Set()
   execResults.value = null
@@ -164,6 +166,7 @@ async function scan() {
       template_instance_id: templateInstanceId.value,
       template_database: templateDatabase.value,
     })
+    scanId.value = result.scan_id
     items.value = result.items
     scanErrors.value = result.errors
     applyDefaultSelection(result.items)
@@ -186,13 +189,19 @@ function openConfirm() {
 }
 
 async function execute() {
-  showConfirm.value = false
+  if (executing.value) return
+  if (!scanId.value) {
+    error.value = '请先扫描差异后再执行'
+    showConfirm.value = false
+    return
+  }
   executing.value = true
+  showConfirm.value = false
   error.value = ''
   info.value = ''
   try {
     const results = await api.execute({
-      items: selectedItems.value,
+      scan_id: scanId.value,
       item_ids: selectedItems.value.map((i) => i.id),
       stop_on_error: stopOnError.value,
       group_id: groupId.value,
@@ -222,7 +231,8 @@ onMounted(async () => {
   <div>
     <h1 class="page-title">同步工作台</h1>
     <p class="page-desc">
-      选择表组与模板库，扫描差异后勾选执行。执行会携带完整 DiffItem（含 SQL）。
+      选择表组与模板库，扫描差异后勾选执行。执行仅提交扫描编号与勾选项，SQL
+      由服务端缓存查找，不信任客户端脚本。
     </p>
 
     <div v-if="error" class="msg msg-error">{{ error }}</div>
@@ -380,8 +390,22 @@ onMounted(async () => {
           包含危险操作（如删列/删索引），请仔细核对。
         </p>
         <div class="dialog-actions">
-          <button type="button" class="btn" @click="showConfirm = false">取消</button>
-          <button type="button" class="btn btn-primary" @click="execute">确认执行</button>
+          <button
+            type="button"
+            class="btn"
+            :disabled="executing"
+            @click="showConfirm = false"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            :disabled="executing"
+            @click="execute"
+          >
+            {{ executing ? '执行中…' : '确认执行' }}
+          </button>
         </div>
       </div>
     </div>

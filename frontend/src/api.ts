@@ -1,9 +1,12 @@
-/** 与后端 /api 契约对齐的前端客户端 */
+/** 与后端 /api 契约对齐的前端客户端（经会话层加密） */
+
+import { secureRequest } from './transport'
 
 export type RiskLevel = 'safe' | 'caution' | 'dangerous'
 
 export type DiffKind =
   | 'create_table'
+  | 'modify_table'
   | 'add_column'
   | 'modify_column'
   | 'drop_column'
@@ -60,6 +63,7 @@ export interface ScanError {
 }
 
 export interface ScanResult {
+  scan_id: string
   items: DiffItem[]
   errors: ScanError[]
 }
@@ -82,31 +86,7 @@ export interface HistoryRecord {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  })
-  if (!res.ok) {
-    let detail = res.statusText
-    try {
-      const body = (await res.json()) as { detail?: unknown }
-      if (typeof body.detail === 'string') {
-        detail = body.detail
-      } else if (body.detail != null) {
-        detail = JSON.stringify(body.detail)
-      }
-    } catch {
-      /* 非 JSON */
-    }
-    throw new Error(detail || `HTTP ${res.status}`)
-  }
-  if (res.status === 204) {
-    return undefined as T
-  }
-  return (await res.json()) as T
+  return secureRequest<T>(path, init)
 }
 
 export const api = {
@@ -158,8 +138,8 @@ export const api = {
     }),
 
   execute: (body: {
-    items: DiffItem[]
-    item_ids?: string[]
+    scan_id: string
+    item_ids: string[]
     stop_on_error: boolean
     group_id?: string
     template_instance_id?: string

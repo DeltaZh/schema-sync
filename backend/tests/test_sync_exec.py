@@ -65,6 +65,25 @@ def _tracking_connection(calls: list[str], fail_ids: set[str] | None = None):
     return get_connection
 
 
+def test_execute_connection_error_records_failures_and_stop():
+    from app.sync_exec import execute_selected
+
+    def boom_conn(instance_id: str, database: str):
+        raise RuntimeError("conn refused")
+
+    items = [
+        _diff("a", "create_table"),
+        _diff("b", "add_column"),
+        _diff("c", "add_column", instance_id="i2", database="db2"),
+    ]
+    results = execute_selected(items, stop_on_error=True, get_connection=boom_conn)
+    assert len(results) == 3
+    assert all(not r.ok for r in results)
+    assert "conn refused" in (results[0].error or "")
+    # 同组两项都记失败；下一组因 stop 跳过
+    assert results[2].error == "因前序错误跳过"
+
+
 def test_execute_order_and_continue_on_error():
     from app.sync_exec import execute_selected
 

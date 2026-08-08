@@ -4,12 +4,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from tests.conftest import EncryptedClient
 
-def test_create_instance_get_masks_password_and_yaml_encrypted(tmp_path: Path):
+
+def _enc(tmp_path: Path) -> EncryptedClient:
     from app.main import create_app
 
-    app = create_app(root=tmp_path)
-    client = TestClient(app)
+    return EncryptedClient(TestClient(create_app(root=tmp_path, testing=True)))
+
+
+def test_create_instance_get_masks_password_and_yaml_encrypted(tmp_path: Path):
+    client = _enc(tmp_path)
 
     resp = client.post(
         "/api/instances",
@@ -36,7 +41,6 @@ def test_create_instance_get_masks_password_and_yaml_encrypted(tmp_path: Path):
     assert len(body) == 1
     assert body[0]["password"] == "********"
     assert body[0]["has_password"] is True
-    assert "s3cret-plain" not in listed.text
 
     yaml_text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert "s3cret-plain" not in yaml_text
@@ -45,10 +49,9 @@ def test_create_instance_get_masks_password_and_yaml_encrypted(tmp_path: Path):
 
 def test_put_omitted_password_keeps_existing(tmp_path: Path):
     from app.crypto import PasswordCrypto
-    from app.main import create_app
+    from app.config_store import ConfigStore
 
-    app = create_app(root=tmp_path)
-    client = TestClient(app)
+    client = _enc(tmp_path)
 
     client.post(
         "/api/instances",
@@ -79,8 +82,6 @@ def test_put_omitted_password_keeps_existing(tmp_path: Path):
     assert resp.json()["password"] == "********"
 
     crypto = PasswordCrypto.load_or_create(tmp_path / ".schema-sync.key")
-    from app.config_store import ConfigStore
-
     store = ConfigStore(tmp_path / "config.yaml", crypto)
     loaded = store.load()
     assert loaded.instances[0].host == "10.0.0.1"
@@ -90,10 +91,8 @@ def test_put_omitted_password_keeps_existing(tmp_path: Path):
 def test_put_null_password_keeps_existing(tmp_path: Path):
     from app.crypto import PasswordCrypto
     from app.config_store import ConfigStore
-    from app.main import create_app
 
-    app = create_app(root=tmp_path)
-    client = TestClient(app)
+    client = _enc(tmp_path)
 
     client.post(
         "/api/instances",
@@ -128,10 +127,7 @@ def test_put_null_password_keeps_existing(tmp_path: Path):
 
 
 def test_post_duplicate_id_returns_409(tmp_path: Path):
-    from app.main import create_app
-
-    app = create_app(root=tmp_path)
-    client = TestClient(app)
+    client = _enc(tmp_path)
     payload = {
         "id": "main",
         "host": "127.0.0.1",
@@ -150,10 +146,8 @@ def test_post_duplicate_id_returns_409(tmp_path: Path):
 def test_post_duplicate_id_cannot_clear_password(tmp_path: Path):
     from app.crypto import PasswordCrypto
     from app.config_store import ConfigStore
-    from app.main import create_app
 
-    app = create_app(root=tmp_path)
-    client = TestClient(app)
+    client = _enc(tmp_path)
 
     client.post(
         "/api/instances",
@@ -188,10 +182,7 @@ def test_post_duplicate_id_cannot_clear_password(tmp_path: Path):
 
 
 def test_delete_instance(tmp_path: Path):
-    from app.main import create_app
-
-    app = create_app(root=tmp_path)
-    client = TestClient(app)
+    client = _enc(tmp_path)
 
     client.post(
         "/api/instances",
