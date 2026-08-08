@@ -200,7 +200,10 @@ async function runScan() {
     scanId.value = resp.scan_id;
     items.value = resp.items;
     selectDefaultItems();
-    status.value = `扫描完成：${resp.items.length} 条差异（scan_id=${resp.scan_id}）`;
+    const warnCount = resp.warnings?.length ?? 0;
+    status.value = `扫描完成：${resp.items.length} 条差异（scan_id=${resp.scan_id}）${
+      warnCount ? `；${warnCount} 条提示（已跳过缺失库等）` : ""
+    }`;
   } catch (e) {
     error.value = String(e);
     status.value = "";

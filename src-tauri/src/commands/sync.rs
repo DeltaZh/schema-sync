@@ -9,7 +9,7 @@ use crate::history::{new_record_meta, HistoryRecord};
 use crate::mysql;
 use crate::preview_cache::RuleTarget;
 
-use super::rules::expand_targets_offline;
+use super::rules::{expand_targets_enabled, filter_targets_existing};
 use super::state::AppState;
 use super::util::{decrypt_password, find_connection, new_id};
 
@@ -28,6 +28,8 @@ pub struct BaselineScanRequest {
 pub struct BaselineScanResponse {
     pub scan_id: String,
     pub items: Vec<DiffItem>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,16 +62,24 @@ pub async fn baseline_scan(
         .ok_or_else(|| format!("未知规则: {}", req.rule_id))?;
 
     let baseline_conn = find_connection(&config, &req.baseline_connection_id)?.clone();
+    if !baseline_conn.enabled {
+        return Err("基准连接已禁用".into());
+    }
     let baseline_password = decrypt_password(&state.store, &baseline_conn)?;
 
-    // 展开目标，排除基准自身 + 用户剔选
+    // 展开目标，排除基准自身 + 用户剔选；跳过禁用连接
     let mut exclude = req.exclude_targets.clone();
     exclude.push(RuleTarget {
         connection_id: req.baseline_connection_id.clone(),
         database: req.baseline_database.clone(),
         exists: None,
     });
-    let targets = expand_targets_offline(&rule, &exclude);
+    let (targets, mut warnings) = expand_targets_enabled(&rule, &config, &exclude);
+
+    // 仅保留真实存在的库；缺失库跳过，不拖垮整次扫描
+    let (targets, probe_warnings) =
+        filter_targets_existing(targets, &config, &state.store).await;
+    warnings.extend(probe_warnings);
 
     // 抽取基准表结构
     let mut templates = Vec::new();
@@ -118,7 +128,11 @@ pub async fn baseline_scan(
         .map_err(|e| e.to_string())?
         .put(scan_id.clone(), items.clone());
 
-    Ok(BaselineScanResponse { scan_id, items })
+    Ok(BaselineScanResponse {
+        scan_id,
+        items,
+        warnings,
+    })
 }
 
 #[tauri::command]

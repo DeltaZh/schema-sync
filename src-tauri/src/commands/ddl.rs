@@ -1,5 +1,7 @@
 //! 模式 2：DDL 投放 preview / execute
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -7,9 +9,9 @@ use crate::ddl_guard;
 use crate::exec::ExecResult;
 use crate::history::{new_record_meta, HistoryRecord};
 use crate::mysql;
-use crate::preview_cache::{DdlPreviewEntry, RuleTarget};
+use crate::preview_cache::{DdlPreviewEntry, FrozenConnection, RuleTarget};
 
-use super::rules::expand_targets_offline;
+use super::rules::{expand_targets_enabled, filter_targets_existing};
 use super::state::AppState;
 use super::util::{decrypt_password, find_connection, new_id};
 
@@ -26,6 +28,8 @@ pub struct DdlPreviewResponse {
     pub preview_id: String,
     pub statements: Vec<String>,
     pub targets: Vec<RuleTarget>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,26 +43,32 @@ fn default_true() -> bool {
     true
 }
 
-/// 校验 SQL + 展开目标并写入预览缓存（供 command / 单测）
-pub fn ddl_preview_core(
+/// 在已确定 targets 后写入预览缓存（含连接端点快照）
+pub fn ddl_preview_store(
     state: &AppState,
-    req: &DdlPreviewRequest,
+    statements: Vec<String>,
+    targets: Vec<RuleTarget>,
+    warnings: Vec<String>,
 ) -> Result<DdlPreviewResponse, String> {
-    let statements = ddl_guard::validate_structure_ddl(&req.sql)?;
     let config = state.config.lock().map_err(|e| e.to_string())?;
-    let rule = config
-        .rules
-        .iter()
-        .find(|r| r.id == req.rule_id)
-        .cloned()
-        .ok_or_else(|| format!("未知规则: {}", req.rule_id))?;
+    let mut connections = HashMap::new();
+    for t in &targets {
+        if connections.contains_key(&t.connection_id) {
+            continue;
+        }
+        let conn = find_connection(&config, &t.connection_id)?;
+        connections.insert(
+            t.connection_id.clone(),
+            FrozenConnection::from_config(conn),
+        );
+    }
     drop(config);
 
-    let targets = expand_targets_offline(&rule, &req.exclude);
     let preview_id = new_id("preview");
     let entry = DdlPreviewEntry {
         statements: statements.clone(),
         targets: targets.clone(),
+        connections,
     };
     state
         .ddl_previews
@@ -70,15 +80,41 @@ pub fn ddl_preview_core(
         preview_id,
         statements,
         targets,
+        warnings,
     })
 }
 
+/// 校验 SQL + 展开/探测目标并写入预览缓存（供 command / 集成路径）
+pub async fn ddl_preview_core(
+    state: &AppState,
+    req: &DdlPreviewRequest,
+) -> Result<DdlPreviewResponse, String> {
+    let statements = ddl_guard::validate_structure_ddl(&req.sql)?;
+    let (rule, config) = {
+        let config = state.config.lock().map_err(|e| e.to_string())?;
+        let rule = config
+            .rules
+            .iter()
+            .find(|r| r.id == req.rule_id)
+            .cloned()
+            .ok_or_else(|| format!("未知规则: {}", req.rule_id))?;
+        (rule, config.clone())
+    };
+
+    let (targets, mut warnings) = expand_targets_enabled(&rule, &config, &req.exclude);
+    let (targets, probe_warnings) =
+        filter_targets_existing(targets, &config, &state.store).await;
+    warnings.extend(probe_warnings);
+
+    ddl_preview_store(state, statements, targets, warnings)
+}
+
 #[tauri::command]
-pub fn ddl_preview(
+pub async fn ddl_preview(
     state: State<'_, AppState>,
     req: DdlPreviewRequest,
 ) -> Result<DdlPreviewResponse, String> {
-    ddl_preview_core(&state, &req)
+    ddl_preview_core(&state, &req).await
 }
 
 #[tauri::command]
@@ -94,7 +130,6 @@ pub async fn ddl_execute(
             .ok_or_else(|| format!("未知预览: {}", req.preview_id))?
     };
 
-    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
     let mut results = Vec::new();
     let mut stopped = false;
 
@@ -113,13 +148,17 @@ pub async fn ddl_execute(
                 continue;
             }
 
-            let conn = match find_connection(&config, &target.connection_id) {
-                Ok(c) => c.clone(),
-                Err(e) => {
+            // 使用预览时冻结的连接端点，而非当前配置
+            let frozen = match entry.connections.get(&target.connection_id) {
+                Some(f) => f,
+                None => {
                     results.push(ExecResult {
                         diff_id,
                         ok: false,
-                        error: Some(e),
+                        error: Some(format!(
+                            "预览快照中缺少连接: {}",
+                            target.connection_id
+                        )),
                     });
                     if req.stop_on_error {
                         stopped = true;
@@ -127,6 +166,7 @@ pub async fn ddl_execute(
                     continue;
                 }
             };
+            let conn = frozen.to_connection_config(&target.connection_id);
             let password = match decrypt_password(&state.store, &conn) {
                 Ok(p) => p,
                 Err(e) => {
@@ -185,10 +225,21 @@ pub async fn ddl_execute(
 mod tests {
     use super::*;
     use crate::commands::state::AppState;
-    use crate::models::{NamingRule, PartKind};
+    use crate::models::{ConnectionConfig, NamingRule, PartKind};
+    use crate::preview_cache::FrozenConnection;
 
     fn seed_rule(state: &AppState) {
         let mut cfg = state.config.lock().unwrap();
+        cfg.connections = vec![ConnectionConfig {
+            id: "c1".into(),
+            name: "local".into(),
+            host: "127.0.0.1".into(),
+            port: 3306,
+            user: "root".into(),
+            password: "secret".into(),
+            enabled: true,
+            remark: String::new(),
+        }];
         cfg.rules = vec![NamingRule {
             id: "r1".into(),
             logical_name: "order".into(),
@@ -205,60 +256,107 @@ mod tests {
     fn ddl_preview_rejects_dangerous_sql() {
         let (_dir, state) = AppState::open_temp();
         seed_rule(&state);
-        let err = ddl_preview_core(
-            &state,
-            &DdlPreviewRequest {
-                sql: "DELETE FROM users WHERE id = 1;".into(),
-                rule_id: "r1".into(),
-                exclude: vec![],
-            },
-        )
-        .unwrap_err();
+        // 危险语句在探测前即拒绝（同步校验路径）
+        let err = ddl_guard::validate_structure_ddl("DELETE FROM users WHERE id = 1;")
+            .unwrap_err();
         assert!(
             err.contains("DELETE") || err.contains("不允许") || err.contains("危险"),
             "unexpected err: {err}"
         );
-        assert!(state.ddl_previews.lock().unwrap().get("anything").is_none());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(ddl_preview_core(
+                &state,
+                &DdlPreviewRequest {
+                    sql: "DELETE FROM users WHERE id = 1;".into(),
+                    rule_id: "r1".into(),
+                    exclude: vec![],
+                },
+            ))
+            .unwrap_err();
+        assert!(
+            err.contains("DELETE") || err.contains("不允许") || err.contains("危险"),
+            "unexpected err: {err}"
+        );
     }
 
     #[test]
-    fn ddl_preview_accepts_alter_and_caches_token() {
+    fn ddl_preview_store_freezes_connection_snapshot() {
         let (_dir, state) = AppState::open_temp();
         seed_rule(&state);
-        let resp = ddl_preview_core(
+        let targets = vec![RuleTarget {
+            connection_id: "c1".into(),
+            database: "order_lemi".into(),
+            exists: Some(true),
+        }];
+        let resp = ddl_preview_store(
             &state,
-            &DdlPreviewRequest {
-                sql: "ALTER TABLE t ADD COLUMN c int;".into(),
-                rule_id: "r1".into(),
-                exclude: vec![],
-            },
+            vec!["ALTER TABLE t ADD COLUMN c int".into()],
+            targets.clone(),
+            vec![],
         )
         .unwrap();
         assert!(!resp.preview_id.is_empty());
-        assert_eq!(resp.statements.len(), 1);
         assert_eq!(resp.targets.len(), 1);
-        assert_eq!(resp.targets[0].database, "order_lemi");
+
+        // 事后改配置：execute 仍应使用快照中的端点
+        {
+            let mut cfg = state.config.lock().unwrap();
+            cfg.connections[0].host = "10.0.0.9".into();
+            cfg.connections[0].password = "new-secret".into();
+        }
+
         let cache = state.ddl_previews.lock().unwrap();
         let cached = cache.get(&resp.preview_id).unwrap();
+        assert_eq!(cached.connections["c1"].host, "127.0.0.1");
+        assert_eq!(cached.connections["c1"].password, "secret");
         assert_eq!(cached.statements, resp.statements);
-        assert!(crate::commands::util::same_target(
-            &cached.targets[0],
-            &resp.targets[0]
-        ));
     }
 
     #[test]
     fn ddl_preview_unknown_rule_fails() {
         let (_dir, state) = AppState::open_temp();
-        let err = ddl_preview_core(
-            &state,
-            &DdlPreviewRequest {
-                sql: "ALTER TABLE t ADD COLUMN c int;".into(),
-                rule_id: "missing".into(),
-                exclude: vec![],
-            },
-        )
-        .unwrap_err();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(ddl_preview_core(
+                &state,
+                &DdlPreviewRequest {
+                    sql: "ALTER TABLE t ADD COLUMN c int;".into(),
+                    rule_id: "missing".into(),
+                    exclude: vec![],
+                },
+            ))
+            .unwrap_err();
         assert!(err.contains("未知规则"));
+    }
+
+    #[test]
+    fn frozen_snapshot_used_over_live_config() {
+        let frozen = FrozenConnection {
+            host: "preview-host".into(),
+            port: 3307,
+            user: "u".into(),
+            password: "p".into(),
+        };
+        let live_looks_different = ConnectionConfig {
+            id: "c1".into(),
+            name: "x".into(),
+            host: "edited-host".into(),
+            port: 9999,
+            user: "other".into(),
+            password: "other".into(),
+            enabled: true,
+            remark: String::new(),
+        };
+        let from_snap = frozen.to_connection_config("c1");
+        assert_ne!(from_snap.host, live_looks_different.host);
+        assert_eq!(from_snap.host, "preview-host");
+        assert_eq!(from_snap.port, 3307);
     }
 }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
 import {
   ddlExecute,
   ddlPreview,
+  expandRuleTargets,
   listRules,
 } from "../lib/tauri";
 import type {
@@ -10,6 +11,7 @@ import type {
   DdlPreviewResponse,
   ExecResult,
   NamingRule,
+  RuleTarget,
 } from "../types";
 
 const props = defineProps<{
@@ -20,6 +22,9 @@ const rules = ref<NamingRule[]>([]);
 const ruleId = ref("");
 const sql = ref("");
 const stopOnError = ref(true);
+
+const targets = ref<RuleTarget[]>([]);
+const excludedKeys = ref<Set<string>>(new Set());
 
 const preview = ref<DdlPreviewResponse | null>(null);
 const previewing = ref(false);
@@ -32,12 +37,40 @@ function connName(id: string): string {
   return props.connections.find((c) => c.id === id)?.name ?? id;
 }
 
+function targetKey(t: RuleTarget): string {
+  return `${t.connection_id}\0${t.database}`;
+}
+
+function toggleExclude(t: RuleTarget, exclude: boolean) {
+  const next = new Set(excludedKeys.value);
+  const key = targetKey(t);
+  if (exclude) next.add(key);
+  else next.delete(key);
+  excludedKeys.value = next;
+}
+
 async function reloadRules() {
   try {
     rules.value = await listRules();
     if (!ruleId.value || !rules.value.some((r) => r.id === ruleId.value)) {
       ruleId.value = rules.value[0]?.id ?? "";
     }
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function refreshTargets() {
+  targets.value = [];
+  excludedKeys.value = new Set();
+  if (!ruleId.value) return;
+  error.value = "";
+  try {
+    targets.value = await expandRuleTargets({
+      rule_id: ruleId.value,
+      probe: false,
+      exclude: [],
+    });
   } catch (e) {
     error.value = String(e);
   }
@@ -58,12 +91,21 @@ async function runPreview() {
   previewing.value = true;
   status.value = "正在校验并展开目标…";
   try {
+    const exclude = targets.value
+      .filter((t) => excludedKeys.value.has(targetKey(t)))
+      .map((t) => ({
+        connection_id: t.connection_id,
+        database: t.database,
+      }));
     preview.value = await ddlPreview({
       sql: sql.value,
       rule_id: ruleId.value,
-      exclude: [],
+      exclude,
     });
-    status.value = `预览就绪：${preview.value.statements.length} 条语句 → ${preview.value.targets.length} 个目标`;
+    const warnCount = preview.value.warnings?.length ?? 0;
+    status.value = `预览就绪：${preview.value.statements.length} 条语句 → ${preview.value.targets.length} 个目标${
+      warnCount ? `（${warnCount} 条提示）` : ""
+    }`;
   } catch (e) {
     error.value = String(e);
     status.value = "";
@@ -105,8 +147,13 @@ async function runExecute() {
   }
 }
 
-onMounted(() => {
-  void reloadRules();
+watch(ruleId, () => {
+  void refreshTargets();
+});
+
+onMounted(async () => {
+  await reloadRules();
+  await refreshTargets();
 });
 </script>
 
@@ -163,6 +210,40 @@ onMounted(() => {
       </div>
     </div>
 
+    <div v-if="targets.length" class="section-block">
+      <h3 class="section-title">投放目标（可剔除）</h3>
+      <p class="muted">勾选「剔除」后，预览与投放不会包含该目标库。</p>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>剔除</th>
+            <th>连接</th>
+            <th>数据库</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="t in targets" :key="targetKey(t)">
+            <td>
+              <input
+                type="checkbox"
+                :checked="excludedKeys.has(targetKey(t))"
+                @change="
+                  toggleExclude(
+                    t,
+                    ($event.target as HTMLInputElement).checked,
+                  )
+                "
+              />
+            </td>
+            <td>{{ connName(t.connection_id) }}</td>
+            <td>
+              <code>{{ t.database }}</code>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
     <div v-if="preview" class="section-block">
       <h3 class="section-title">
         预览结果
@@ -171,6 +252,13 @@ onMounted(() => {
         </span>
       </h3>
 
+      <div v-if="preview.warnings?.length" class="warn-box">
+        <p class="muted" style="margin: 0 0 6px">提示（已跳过缺失或不可达目标）：</p>
+        <ul>
+          <li v-for="(w, i) in preview.warnings" :key="i">{{ w }}</li>
+        </ul>
+      </div>
+
       <h4 class="subsection-title">已校验语句</h4>
       <ol class="stmt-list">
         <li v-for="(s, i) in preview.statements" :key="i">
@@ -178,7 +266,9 @@ onMounted(() => {
         </li>
       </ol>
 
-      <h4 class="subsection-title">目标库（{{ preview.targets.length }}）</h4>
+      <h4 class="subsection-title">
+        将投放的目标库（{{ preview.targets.length }}）
+      </h4>
       <table class="data-table">
         <thead>
           <tr>
@@ -219,3 +309,17 @@ onMounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.warn-box {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #ccc);
+  background: color-mix(in srgb, var(--bg, #fff) 92%, #e6a817 8%);
+}
+.warn-box ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+</style>

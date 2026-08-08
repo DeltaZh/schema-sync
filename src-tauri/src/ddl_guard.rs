@@ -270,16 +270,14 @@ fn split_alter_clauses(clauses: &str) -> Vec<&str> {
 }
 
 fn is_allowed_alter_clause(clause: &str) -> bool {
-    let upper = clause.to_ascii_uppercase();
+    let upper = clause.trim().to_ascii_uppercase();
+    // 仅允许明确的列/索引形态；禁止 ADD CONSTRAINT … FOREIGN KEY 等靠子串误匹配
     upper.starts_with("ADD COLUMN ")
-        || upper.starts_with("ADD ")
-            && (upper.contains(" INDEX ")
-                || upper.contains(" KEY ")
-                || upper.starts_with("ADD PRIMARY KEY")
-                || upper.starts_with("ADD UNIQUE INDEX")
-                || upper.starts_with("ADD UNIQUE KEY"))
         || upper.starts_with("MODIFY COLUMN ")
-        || upper.starts_with("MODIFY ")
+        || upper.starts_with("ADD INDEX ")
+        || upper.starts_with("ADD KEY ")
+        || upper.starts_with("ADD UNIQUE INDEX ")
+        || upper.starts_with("ADD UNIQUE KEY ")
 }
 
 #[cfg(test)]
@@ -377,5 +375,31 @@ mod tests {
         let sql = "ALTER TABLE t ADD COLUMN c int; DELETE FROM t;";
         let err = validate_structure_ddl(sql).unwrap_err();
         assert!(err.contains("第 2 条"));
+    }
+
+    #[test]
+    fn add_key_and_unique_forms_pass() {
+        assert!(validate_structure_ddl("ALTER TABLE t ADD KEY `k` (`a`);").is_ok());
+        assert!(validate_structure_ddl("ALTER TABLE t ADD UNIQUE INDEX `u` (`a`);").is_ok());
+        assert!(validate_structure_ddl("ALTER TABLE t ADD UNIQUE KEY `u` (`a`);").is_ok());
+    }
+
+    #[test]
+    fn add_constraint_foreign_key_rejected() {
+        let sql = "ALTER TABLE t ADD CONSTRAINT fk_x FOREIGN KEY (a) REFERENCES other(id);";
+        let err = validate_structure_ddl(sql).unwrap_err();
+        assert!(
+            err.contains("仅允许") || err.contains("不允许"),
+            "unexpected err: {err}"
+        );
+    }
+
+    #[test]
+    fn add_clause_with_index_substring_only_rejected() {
+        // 不得仅因子串含 INDEX/KEY 就放行
+        let sql = "ALTER TABLE t ADD CONSTRAINT c_idx CHECK (x > 0);";
+        assert!(validate_structure_ddl(sql).is_err());
+        let sql2 = "ALTER TABLE t ADD PRIMARY KEY (id);";
+        assert!(validate_structure_ddl(sql2).is_err());
     }
 }

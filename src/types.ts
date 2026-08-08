@@ -120,6 +120,7 @@ export interface BaselineScanRequest {
 export interface BaselineScanResponse {
   scan_id: string;
   items: DiffItem[];
+  warnings?: string[];
 }
 
 export interface BaselineExecuteRequest {
@@ -138,6 +139,7 @@ export interface DdlPreviewResponse {
   preview_id: string;
   statements: string[];
   targets: RuleTarget[];
+  warnings?: string[];
 }
 
 export interface DdlExecuteRequest {
