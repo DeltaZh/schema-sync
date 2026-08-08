@@ -189,7 +189,7 @@ fn only_logical_name() {
 
 #[test]
 fn tenant_year_shard_order() {
-    // parts: Tenant, Year, Shard → order_lemi_2025_1
+    // parts: Tenant, Year, Shard → order_demo_2025_1
     ...
 }
 

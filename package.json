@@ -2,6 +2,9 @@
   "name": "schema-sync",
   "private": true,
   "version": "0.1.0",
+  "description": "多 MySQL 实例表结构同步桌面应用",
+  "author": "DeltaZh",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

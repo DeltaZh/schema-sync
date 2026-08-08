@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import ExecResultsTable from "./ExecResultsTable.vue";
 import { formatHistoryTime, kindLabel, riskLabel } from "../lib/labels";
 import { listHistory } from "../lib/tauri";
 import type { ConnectionConfig, HistoryRecord } from "../types";
 
-defineProps<{
+const props = defineProps<{
   connections: ConnectionConfig[];
 }>();
+
+function connName(id: string): string {
+  return props.connections.find((c) => c.id === id)?.name ?? id;
+}
 
 const records = ref<HistoryRecord[]>([]);
 const expanded = ref<Set<string>>(new Set());
@@ -82,28 +87,7 @@ onMounted(() => {
 
         <div v-if="expanded.has(r.id)" class="history-body">
           <h4 class="subsection-title">执行结果</h4>
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>状态</th>
-                <th>ID</th>
-                <th>错误</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(res, i) in r.results" :key="i">
-                <td>
-                  <span v-if="res.ok" class="ok-text">成功</span>
-                  <span v-else class="error-text">失败</span>
-                </td>
-                <td><code>{{ res.diff_id }}</code></td>
-                <td>{{ res.error || "—" }}</td>
-              </tr>
-              <tr v-if="r.results.length === 0">
-                <td colspan="3" class="muted">无结果项</td>
-              </tr>
-            </tbody>
-          </table>
+          <ExecResultsTable :results="r.results" :conn-name="connName" />
 
           <template v-if="r.item_snapshots.length">
             <h4 class="subsection-title">差异快照</h4>

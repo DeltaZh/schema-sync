@@ -19,6 +19,7 @@ pub struct RuleTarget {
 /// 预览时冻结的连接端点（execute 只用快照，避免同 id 配置事后被改）
 #[derive(Debug, Clone)]
 pub struct FrozenConnection {
+    pub name: String,
     pub host: String,
     pub port: u16,
     pub user: String,
@@ -29,6 +30,7 @@ pub struct FrozenConnection {
 impl FrozenConnection {
     pub fn from_config(conn: &ConnectionConfig) -> Self {
         Self {
+            name: conn.name.clone(),
             host: conn.host.clone(),
             port: conn.port,
             user: conn.user.clone(),
@@ -40,13 +42,14 @@ impl FrozenConnection {
     pub fn to_connection_config(&self, id: &str) -> ConnectionConfig {
         ConnectionConfig {
             id: id.to_string(),
-            name: String::new(),
+            name: self.name.clone(),
             host: self.host.clone(),
             port: self.port,
             user: self.user.clone(),
             password: self.password.clone(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         }
     }
 }
@@ -91,6 +94,7 @@ mod tests {
         connections.insert(
             "c1".into(),
             FrozenConnection {
+                name: "local".into(),
                 host: "127.0.0.1".into(),
                 port: 3306,
                 user: "root".into(),
@@ -126,6 +130,7 @@ mod tests {
             password: "enc:v1:abc".into(),
             enabled: true,
             remark: String::new(),
+            visible_databases: Vec::new(),
         };
         let frozen = FrozenConnection::from_config(&cfg);
         let restored = frozen.to_connection_config("c1");

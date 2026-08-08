@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import BaselineSyncPane from "./components/BaselineSyncPane.vue";
+import ConfirmDialogHost from "./components/ConfirmDialogHost.vue";
 import ConnectionTree from "./components/ConnectionTree.vue";
 import DdlBroadcastPane from "./components/DdlBroadcastPane.vue";
 import HistoryPane from "./components/HistoryPane.vue";
@@ -100,5 +101,7 @@ function onConnectionsChanged(list: ConnectionConfig[]) {
         :connections="connections"
       />
     </div>
+
+    <ConfirmDialogHost />
   </div>
 </template>

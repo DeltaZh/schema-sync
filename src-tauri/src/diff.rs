@@ -57,9 +57,18 @@ pub struct DiffItem {
     pub connection_id: String,
     pub database: String,
     pub table: String,
+    /// 对象名（列名 / 索引名 / 表名）
+    #[serde(default)]
+    pub object_name: String,
     pub title: String,
     /// 人类可读说明，须含注释信息（如「字段注释: xxx」）
     pub detail: String,
+    /// 左侧：基准侧展示文本
+    #[serde(default)]
+    pub baseline_view: String,
+    /// 右侧：目标侧展示文本
+    #[serde(default)]
+    pub target_view: String,
     pub sql: String,
     pub selected_default: bool,
 }
@@ -97,6 +106,58 @@ fn format_comment(comment: &str) -> String {
     }
 }
 
+fn format_column_view(c: &ColumnDef) -> String {
+    format!(
+        "列名: {}\n类型: {}\n可空: {}\n默认值: {}\n额外: {}\n注释: {}",
+        c.name,
+        c.col_type,
+        if c.nullable { "是" } else { "否" },
+        c.default.as_deref().unwrap_or("（无）"),
+        if c.extra.is_empty() {
+            "（无）"
+        } else {
+            c.extra.as_str()
+        },
+        format_comment(&c.comment),
+    )
+}
+
+fn format_index_view(i: &IndexDef) -> String {
+    format!(
+        "索引名: {}\n列: {}\n唯一: {}\n主键: {}",
+        if i.name.is_empty() {
+            "PRIMARY"
+        } else {
+            i.name.as_str()
+        },
+        i.columns.join(", "),
+        if i.unique { "是" } else { "否" },
+        if i.primary { "是" } else { "否" },
+    )
+}
+
+fn format_table_summary(schema: &TableSchema) -> String {
+    let mut lines = vec![
+        format!("表名: {}", schema.name),
+        format!("注释: {}", format_comment(&schema.comment)),
+        format!("列数: {}", schema.columns.len()),
+        "列:".into(),
+    ];
+    for c in &schema.columns {
+        lines.push(format!(
+            "  - {} {}{}",
+            c.name,
+            c.col_type,
+            if c.comment.is_empty() {
+                String::new()
+            } else {
+                format!(" // {}", c.comment)
+            }
+        ));
+    }
+    lines.join("\n")
+}
+
 fn build_item(
     kind: DiffKind,
     ctx: &DiffCtx,
@@ -106,6 +167,8 @@ fn build_item(
     detail: String,
     sql: String,
     as_replacement: bool,
+    baseline_view: String,
+    target_view: String,
 ) -> DiffItem {
     // 替换对中的 add 半边标 caution，避免默认勾选造成半改
     let risk = if as_replacement && kind == DiffKind::AddIndex {
@@ -120,8 +183,11 @@ fn build_item(
         connection_id: ctx.connection_id.clone(),
         database: ctx.database.clone(),
         table: table.to_string(),
+        object_name: name.to_string(),
         title,
         detail,
+        baseline_view,
+        target_view,
         sql,
         selected_default: default_selected(risk),
     }
@@ -204,6 +270,8 @@ pub fn diff_table(
             detail,
             sql_gen::create_table_sql(template),
             false,
+            format_table_summary(template),
+            "（目标库无此表）".into(),
         )];
     };
 
@@ -224,6 +292,8 @@ pub fn diff_table(
             detail,
             sql_gen::alter_table_comment_sql(table, &template.comment),
             false,
+            format!("表注释: {}", format_comment(&template.comment)),
+            format!("表注释: {}", format_comment(&target.comment)),
         ));
     }
 
@@ -253,6 +323,8 @@ pub fn diff_table(
                     detail,
                     sql_gen::add_column_sql(table, col),
                     false,
+                    format_column_view(col),
+                    "（目标无此列）".into(),
                 ));
             }
             Some(tgt_col) if !columns_equal(col, tgt_col) => {
@@ -266,6 +338,8 @@ pub fn diff_table(
                     detail,
                     sql_gen::modify_column_sql(table, col),
                     false,
+                    format_column_view(col),
+                    format_column_view(tgt_col),
                 ));
             }
             _ => {}
@@ -286,6 +360,8 @@ pub fn diff_table(
                 detail,
                 sql_gen::drop_column_sql(table, name),
                 false,
+                "（基准无此列）".into(),
+                format_column_view(col),
             ));
         }
     }
@@ -308,6 +384,8 @@ pub fn diff_table(
                 "主键索引".into(),
                 sql_gen::add_index_sql(table, pk),
                 false,
+                format_index_view(pk),
+                "（目标无此主键）".into(),
             ));
         }
         (None, Some(pk)) => {
@@ -324,6 +402,8 @@ pub fn diff_table(
                 "主键索引".into(),
                 sql_gen::drop_index_sql(table, pk),
                 false,
+                "（基准无此主键）".into(),
+                format_index_view(pk),
             ));
         }
         (Some(tmpl_pk), Some(tgt_pk)) if !index_equiv(tmpl_pk, tgt_pk) => {
@@ -340,6 +420,8 @@ pub fn diff_table(
                 "主键索引".into(),
                 sql_gen::drop_index_sql(table, tgt_pk),
                 false,
+                "（基准主键将替换）".into(),
+                format_index_view(tgt_pk),
             ));
             items.push(build_item(
                 DiffKind::AddIndex,
@@ -354,6 +436,8 @@ pub fn diff_table(
                 "主键索引".into(),
                 sql_gen::add_index_sql(table, tmpl_pk),
                 true,
+                format_index_view(tmpl_pk),
+                "（目标主键将被替换）".into(),
             ));
         }
         _ => {}
@@ -373,6 +457,8 @@ pub fn diff_table(
                 format!("索引列: {}", idx.columns.join(", ")),
                 sql_gen::add_index_sql(table, idx),
                 false,
+                format_index_view(idx),
+                "（目标无此索引）".into(),
             ));
         } else if !index_equiv(idx, tgt_idx[name]) {
             items.push(build_item(
@@ -384,6 +470,8 @@ pub fn diff_table(
                 format!("索引列: {}", tgt_idx[name].columns.join(", ")),
                 sql_gen::drop_index_sql(table, tgt_idx[name]),
                 false,
+                "（基准索引将替换）".into(),
+                format_index_view(tgt_idx[name]),
             ));
             items.push(build_item(
                 DiffKind::AddIndex,
@@ -394,6 +482,8 @@ pub fn diff_table(
                 format!("索引列: {}", idx.columns.join(", ")),
                 sql_gen::add_index_sql(table, idx),
                 true,
+                format_index_view(idx),
+                "（目标索引将被替换）".into(),
             ));
         }
     }
@@ -409,6 +499,8 @@ pub fn diff_table(
                 format!("索引列: {}", idx.columns.join(", ")),
                 sql_gen::drop_index_sql(table, idx),
                 false,
+                "（基准无此索引）".into(),
+                format_index_view(idx),
             ));
         }
     }

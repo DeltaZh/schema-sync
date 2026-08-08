@@ -1,6 +1,57 @@
 # Schema Sync
 
-多 MySQL 实例结构同步桌面应用（Tauri 2 + Vue 3）。单机进程，无独立 HTTP 服务端；UI 仅通过 Tauri `invoke` 调用本机 Rust。
+多 MySQL 实例**表结构**同步桌面应用（Tauri 2 + Vue 3）。
+
+单机进程，无独立 HTTP 服务；界面通过 Tauri `invoke` 调用本机 Rust，不对外监听端口，也不把连接信息上传到任何远端。
+
+**作者**：[DeltaZh](https://github.com/DeltaZh)  
+**协议**：[MIT License](./LICENSE)（开源免费，可商用 / 修改 / 二次分发，保留版权与许可声明即可）
+
+---
+
+## 能做什么
+
+| 能力 | 说明 |
+|---|---|
+| 连接与浏览 | 多实例连接树：连接 → 库 → 表；查看字段、索引与注释 |
+| 可见库白名单 | 每个连接可自选要展示的库，避免一次拉全库 |
+| 命名规则 | 模板如 `order_{年份}_{租户}` + 取值列表，展开目标库并绑定连接 |
+| 模式 1：基准对齐 | 以某库为基准扫描差异，勾选生成/执行同步 SQL |
+| 模式 2：DDL 投放 | 将结构类（及受控的高风险）SQL 预览后投放到多个目标库 |
+| 历史 | 本机记录执行结果摘要 |
+
+高风险语句（如 `DROP` / `DELETE` / `UPDATE` / `INSERT` 等）会标出风险，并要求二次确认（输入「确认执行」）；仍禁止 `DROP DATABASE`。
+
+---
+
+## 隐私与本机数据（开源不影响你的环境）
+
+公开本仓库**不会**读取、上传或改动你本机已安装应用里的配置。
+
+| 内容 | 位置 | 是否进仓库 |
+|---|---|---|
+| 连接密码密文、规则、密钥 | 系统应用数据目录（见下表） | **否**（已 gitignore） |
+| 执行历史 | 同上 `history.jsonl` | **否** |
+| 示例配置 | 仓库内 `config.example.json`（空密码占位） | 是 |
+
+| 场景 | 数据目录 |
+|---|---|
+| macOS 生产（Tauri） | `~/Library/Application Support/com.schemasync.desktop/` |
+| 回落默认 | `~/Library/Application Support/schema-sync/` |
+| 开发覆盖 | 环境变量 `$SCHEMA_SYNC_DATA`（如项目下 `.schema-sync-data/`） |
+
+目录内：`config.json`（密码为 `enc:v1:` 密文）、`.schema-sync.key`（本地密钥）、`history.jsonl`。  
+克隆或 fork 本仓库拿不到你的库密码；别人跑起来也只会写到**他们自己**机器的数据目录。
+
+---
+
+## 环境要求
+
+- Node.js 18+（建议 LTS）
+- Rust（与 [Tauri 2 前置条件](https://v2.tauri.app/start/prerequisites/) 一致）
+- 可访问的 MySQL 实例（开发联调时）
+
+---
 
 ## 开发
 
@@ -9,100 +60,101 @@ npm install
 npm run tauri dev
 ```
 
-可选：用环境变量覆盖数据目录（便于隔离测试配置）：
+可选：隔离测试配置，避免写进正式数据目录：
 
 ```bash
 export SCHEMA_SYNC_DATA="$PWD/.schema-sync-data"
 npm run tauri dev
 ```
 
-## 打包（macOS）
+---
+
+## 打包
 
 ```bash
 npm run tauri build
 ```
 
-产物（本机架构）：
+常见产物：
 
-- 应用包：`src-tauri/target/release/bundle/macos/schema-sync.app`
-- 可选安装包：`src-tauri/target/release/bundle/dmg/`（若目标开启）
+- macOS：`src-tauri/target/release/bundle/macos/schema-sync.app`
+- 安装包：`src-tauri/target/release/bundle/dmg/`（若目标开启）
+- Windows：`src-tauri/target/release/bundle/msi/` 或 `nsis/`（在对应平台构建）
 
-### 未签名本地运行
+### macOS 未签名本地运行
 
-未配置 Apple Developer 签名 / 公证时，构建仍可产出 `.app`，但首次打开可能被 Gatekeeper 拦截。本机可任选：
+未配置 Apple Developer 签名 / 公证时，首次打开可能被 Gatekeeper 拦截，可任选：
 
-1. **右键打开**：Finder 中对 `schema-sync.app` → 右键 →「打开」→ 确认。
-2. **清除隔离属性**（仅信任的本机构建产物）：
+1. Finder 中对 `schema-sync.app` → 右键 →「打开」→ 确认  
+2. 仅对本机构建产物清除隔离属性：
 
 ```bash
 xattr -cr "src-tauri/target/release/bundle/macos/schema-sync.app"
 open "src-tauri/target/release/bundle/macos/schema-sync.app"
 ```
 
-正式分发需配置签名与公证（Tauri / Apple 文档），本仓库首版以本机可运行 `.app` 为准。
+正式对外分发需自行配置签名与公证。
 
-## 数据目录
+---
 
-| 场景 | 路径 |
-|---|---|
-| 生产（Tauri） | `~/Library/Application Support/com.schemasync.desktop/` |
-| 回落默认 | `~/Library/Application Support/schema-sync/`（`dirs::data_dir`） |
-| 开发覆盖 | `$SCHEMA_SYNC_DATA` |
+## 安全模型（简要）
 
-目录内主要文件：
+1. **无独立 HTTP 服务**：不对外监听；浏览器不能直连数据库。  
+2. **密码密文落盘**：UI 展示掩码；密钥仅在本机数据目录。  
+3. **执行只认缓存 id**：基准执行用 `scan_id` + `item_ids`；DDL 执行用预览下发的 `preview_id`，客户端无法篡改待执行 SQL。  
+4. **二次确认**：预览后确认；高风险另需输入「确认执行」。  
+5. **勿提交本机数据**：切勿把真实 `config.json` / `.schema-sync.key` / `history.jsonl` 放进 git。
 
-| 文件 | 说明 |
-|---|---|
-| `config.json` | 连接与命名规则（密码为密文） |
-| `.schema-sync.key` | 本地密钥（权限应收紧，勿提交） |
-| `history.jsonl` | 执行历史 |
+---
 
-首次启动若无配置，应用内创建连接与规则即可；也可参考仓库根目录 `config.example.json` 手工放入数据目录后，在应用内补全密码（保存时会加密）。
-
-## 安全模型
-
-1. **无独立 HTTP 服务**：不对外监听；无浏览器直连数据库。
-2. **密码密文落盘**：连接密码以 `enc:v1:` 密文写入 `config.json`；密钥在应用数据目录；UI 不回显明文（展示掩码）。
-3. **执行只认缓存 id**：
-   - 模式 1：`baseline_execute` 仅接受 `scan_id` + `item_ids`，SQL 来自 Rust 侧扫描缓存。
-   - 模式 2：`ddl_execute` 仅接受预览阶段下发的 `preview_id`，禁止客户端篡改待执行 SQL。
-4. **二次确认**：执行前须预览并确认。
-5. **模式 2 DDL 白名单**：仅允许结构类语句；拒绝 `DROP` / `DELETE` / `UPDATE` / `TRUNCATE` 等。
-
-## 使用说明
+## 使用流程（概要）
 
 ### 连接与浏览
 
-1. 在连接管理中新增实例（主机、端口、用户、密码）。
-2. 左侧树：连接 → 库 → 表；右侧查看字段、索引与注释（类 Navicat 浏览）。
+1. 新增连接（主机、端口、用户、密码）。  
+2. 配置该连接的可见库（可选）。  
+3. 左侧树展开库表，右侧查看结构。
 
 ### 命名规则
 
-规则由「逻辑名」+ 可排序部件（租户 / 年 / 分片）组成，笛卡尔展开为物理库名，并绑定到若干连接。用于模式 1 / 模式 2 的目标库集合。
+1. 填写展示名与模板（如 `order_{年份}_{租户}`）。  
+2. 为占位符填写取值列表，绑定到若干连接。  
+3. 用于模式 1 / 模式 2 的目标库展开。
 
 ### 模式 1：基准对齐
 
-1. 选择基准连接与已存在库 → 勾选要同步的表（可见表注释）。
-2. 选择命名规则 → 展开目标库（可剔除）→ 扫描差异（含字段/表注释）。
-3. 勾选执行项（危险项默认不勾）→ 确认 → 按缓存 id 执行并写入历史。
+1. 选基准连接与库 → 勾选要同步的表。  
+2. 选命名规则 → 展开目标库（可剔除）→ 扫描差异。  
+3. 勾选执行项（危险项默认不勾）→ 确认 → 执行并写入历史。
 
 ### 模式 2：DDL 投放
 
-1. 选择规则（可剔库）→ 粘贴结构 DDL（`;` 分隔）。
-2. 预览：白名单校验通过后展示目标库与语句；危险语句会被拒绝。
-3. 确认后按 `preview_id` 串行执行并记录结果。
+1. 选规则（可剔库）→ 粘贴 SQL（`;` 分隔）。  
+2. 预览：校验通过后展示目标与风险。  
+3. 确认后按 `preview_id` 串行执行。
 
-### 历史
-
-「历史」页签可查看本机执行记录与结果摘要。
+---
 
 ## 文档
 
-- 设计：`docs/superpowers/specs/2026-08-08-schema-sync-desktop-design.md`
-- 计划：`docs/superpowers/plans/2026-08-08-schema-sync-desktop.md`
+- 桌面版设计：`docs/superpowers/specs/2026-08-08-schema-sync-desktop-design.md`
+- 实现计划：`docs/superpowers/plans/2026-08-08-schema-sync-desktop.md`
+- 专题规格：`docs/superpowers/specs/2026-08-08-*.md`（命名规则、扫描进度、高风险确认、Logo/筛选等）
+
+---
 
 ## 技术栈
 
-- 前端：Vue 3 + TypeScript + Vite
-- 桌面壳：Tauri 2
-- 后端逻辑：Rust（MySQL / Diff / DDL 校验 / 缓存执行）
+- 前端：Vue 3 + TypeScript + Vite  
+- 桌面壳：Tauri 2  
+- 核心逻辑：Rust（MySQL / Diff / DDL 校验 / 扫描与预览缓存）
+
+---
+
+## License
+
+本项目采用 [MIT License](./LICENSE)。
+
+允许商业使用、修改与二次分发；使用时请保留版权与许可声明（标注作者即可）。
+
+Copyright (c) 2026 DeltaZh

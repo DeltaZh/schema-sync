@@ -27,10 +27,16 @@ src-tauri/target
 
 # App data / secrets（本机配置与主密钥，禁止入库）
 .schema-sync.key
+.schema-sync-data/
 config.yaml
 config.json
 data/
+history.jsonl
 *.log
+
+# 本机构建产物（target 已忽略；根目录误放的安装包也排除）
+*.dmg
+*.app
 
 # SDD 运行时账本（本地）
 .superpowers/

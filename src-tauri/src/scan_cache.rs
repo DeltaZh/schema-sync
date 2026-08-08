@@ -46,8 +46,11 @@ mod tests {
             connection_id: "c1".into(),
             database: "db1".into(),
             table: "t".into(),
+            object_name: "x".into(),
             title: "add".into(),
             detail: "字段注释: x".into(),
+            baseline_view: String::new(),
+            target_view: String::new(),
             sql: sql.into(),
             selected_default: true,
         }

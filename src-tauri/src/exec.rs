@@ -7,12 +7,81 @@ use serde::{Deserialize, Serialize};
 use crate::diff::{DiffItem, DiffKind};
 use crate::scan_cache::ScanCache;
 
-/// 单条执行结果
+/// 单条执行结果（含面向用户的展示字段）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecResult {
     pub diff_id: String,
     pub ok: bool,
     pub error: Option<String>,
+    #[serde(default)]
+    pub connection_id: String,
+    /// 连接显示名；旧历史记录可能为空
+    #[serde(default)]
+    pub connection_name: String,
+    #[serde(default)]
+    pub database: String,
+    /// 人类可读说明（如「第 1 条语句」或差异标题）
+    #[serde(default)]
+    pub summary: String,
+    /// 语句摘要（截断）
+    #[serde(default)]
+    pub sql_preview: String,
+}
+
+/// 截取语句首行摘要，便于结果列表展示
+pub fn sql_preview(sql: &str) -> String {
+    let one_line = sql
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(120)
+        .collect::<String>();
+    if sql.chars().count() > one_line.chars().count() || sql.contains('\n') {
+        if one_line.chars().count() >= 120 {
+            format!("{one_line}…")
+        } else {
+            format!("{one_line} …")
+        }
+    } else {
+        one_line
+    }
+}
+
+pub fn exec_result(
+    diff_id: impl Into<String>,
+    ok: bool,
+    error: Option<String>,
+    connection_id: impl Into<String>,
+    connection_name: impl Into<String>,
+    database: impl Into<String>,
+    summary: impl Into<String>,
+    sql: &str,
+) -> ExecResult {
+    ExecResult {
+        diff_id: diff_id.into(),
+        ok,
+        error,
+        connection_id: connection_id.into(),
+        connection_name: connection_name.into(),
+        database: database.into(),
+        summary: summary.into(),
+        sql_preview: sql_preview(sql),
+    }
+}
+
+fn result_from_item(item: &DiffItem, ok: bool, error: Option<String>) -> ExecResult {
+    exec_result(
+        item.id.clone(),
+        ok,
+        error,
+        item.connection_id.clone(),
+        String::new(),
+        item.database.clone(),
+        item.title.clone(),
+        &item.sql,
+    )
 }
 
 fn kind_order(kind: DiffKind) -> u8 {
@@ -45,10 +114,17 @@ where
     let Some(all) = cache.get(scan_id) else {
         return item_ids
             .iter()
-            .map(|id| ExecResult {
-                diff_id: id.clone(),
-                ok: false,
-                error: Some(format!("未知扫描: {scan_id}")),
+            .map(|id| {
+                exec_result(
+                    id.clone(),
+                    false,
+                    Some(format!("未知扫描: {scan_id}")),
+                    "",
+                    "",
+                    "",
+                    "未知扫描",
+                    "",
+                )
             })
             .collect();
     };
@@ -62,11 +138,16 @@ where
     for id in item_ids {
         match by_id.get(id.as_str()) {
             Some(item) => resolved.push(item),
-            None => unknown.push(ExecResult {
-                diff_id: id.clone(),
-                ok: false,
-                error: Some(format!("未知差异项: {id}")),
-            }),
+            None => unknown.push(exec_result(
+                id.clone(),
+                false,
+                Some(format!("未知差异项: {id}")),
+                "",
+                "",
+                "",
+                "未知差异项",
+                "",
+            )),
         }
     }
 
@@ -74,11 +155,11 @@ where
     if !unknown.is_empty() && stop_on_error {
         let mut out = unknown;
         for item in resolved {
-            out.push(ExecResult {
-                diff_id: item.id.clone(),
-                ok: false,
-                error: Some("已因未知 id 停止，未执行".into()),
-            });
+            out.push(result_from_item(
+                item,
+                false,
+                Some("已因未知 id 停止，未执行".into()),
+            ));
         }
         return out;
     }
@@ -102,27 +183,19 @@ where
     for items in groups.values() {
         for item in items {
             if stopped {
-                results.push(ExecResult {
-                    diff_id: item.id.clone(),
-                    ok: false,
-                    error: Some("已因前序错误停止，未执行".into()),
-                });
+                results.push(result_from_item(
+                    item,
+                    false,
+                    Some("已因前序错误停止，未执行".into()),
+                ));
                 continue;
             }
             match execute_one(item).await {
                 Ok(()) => {
-                    results.push(ExecResult {
-                        diff_id: item.id.clone(),
-                        ok: true,
-                        error: None,
-                    });
+                    results.push(result_from_item(item, true, None));
                 }
                 Err(e) => {
-                    results.push(ExecResult {
-                        diff_id: item.id.clone(),
-                        ok: false,
-                        error: Some(e),
-                    });
+                    results.push(result_from_item(item, false, Some(e)));
                     if stop_on_error {
                         stopped = true;
                     }
@@ -148,8 +221,11 @@ mod tests {
             connection_id: "c1".into(),
             database: "db1".into(),
             table: "t".into(),
+            object_name: id.into(),
             title: id.into(),
             detail: "".into(),
+            baseline_view: String::new(),
+            target_view: String::new(),
             sql: sql.into(),
             selected_default: true,
         }
