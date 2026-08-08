@@ -37,6 +37,11 @@ pub fn key_file_path(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join(".schema-sync.key")
 }
 
+/// 执行历史文件路径（JSONL）
+pub fn history_file_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("history.jsonl")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

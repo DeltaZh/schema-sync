@@ -1,10 +1,13 @@
 pub mod config;
 pub mod crypto;
 pub mod diff;
+pub mod exec;
+pub mod history;
 pub mod models;
 pub mod mysql;
 pub mod naming;
 pub mod paths;
+pub mod scan_cache;
 pub mod schema;
 pub mod sql_gen;
 

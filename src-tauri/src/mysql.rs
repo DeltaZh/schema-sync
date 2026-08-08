@@ -55,6 +55,20 @@ pub async fn ping(conn_cfg: &ConnectionConfig, password_plain: &str) -> Result<(
     Ok(())
 }
 
+/// 在指定库执行单条 SQL（供缓存 id 执行器调用）
+pub async fn execute_sql(
+    conn_cfg: &ConnectionConfig,
+    password_plain: &str,
+    database: &str,
+    sql: &str,
+) -> Result<(), MysqlError> {
+    let pool = open_pool(conn_cfg, password_plain, Some(database)).await?;
+    let result = sqlx::query(sql).execute(&pool).await;
+    pool.close().await;
+    result?;
+    Ok(())
+}
+
 /// 列出全部库名（按名称排序）
 pub async fn list_databases(
     conn_cfg: &ConnectionConfig,
