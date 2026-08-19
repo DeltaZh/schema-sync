@@ -754,3 +754,57 @@ button:disabled {
   padding: 10px 12px 14px;
   border-top: 1px solid var(--border);
 }
+
+.settings-pane {
+  max-width: 920px;
+}
+
+.settings-header {
+  margin-bottom: 14px;
+}
+
+.settings-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.settings-desc {
+  margin: 0;
+  max-width: 62rem;
+}
+
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 16px;
+}
+
+.settings-table th,
+.settings-table td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.settings-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.settings-select {
+  min-width: 11rem;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

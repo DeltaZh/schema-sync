@@ -2,6 +2,7 @@ pub mod commands;
 pub mod config;
 pub mod crypto;
 pub mod ddl_guard;
+pub mod ddl_policy;
 pub mod diff;
 pub mod exec;
 pub mod history;
@@ -50,6 +51,9 @@ pub fn run() {
             commands::baseline_execute,
             commands::ddl_preview,
             commands::ddl_execute,
+            commands::get_ddl_policy,
+            commands::save_ddl_policy,
+            commands::reset_ddl_policy,
             commands::list_history,
         ])
         .run(tauri::generate_context!())

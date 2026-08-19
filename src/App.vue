@@ -6,6 +6,7 @@ import ConnectionTree from "./components/ConnectionTree.vue";
 import DdlBroadcastPane from "./components/DdlBroadcastPane.vue";
 import HistoryPane from "./components/HistoryPane.vue";
 import RulesPane from "./components/RulesPane.vue";
+import SettingsPane from "./components/SettingsPane.vue";
 import StructurePane from "./components/StructurePane.vue";
 import type { ConnectionConfig, MainTab, TableSelection } from "./types";
 
@@ -15,7 +16,7 @@ const connections = ref<ConnectionConfig[]>([]);
 
 function onSelectTable(s: TableSelection) {
   selection.value = s;
-  if (activeTab.value === "rules") return;
+  if (activeTab.value === "rules" || activeTab.value === "settings") return;
   activeTab.value = "structure";
 }
 
@@ -78,6 +79,15 @@ function onConnectionsChanged(list: ConnectionConfig[]) {
         >
           历史
         </button>
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: activeTab === 'settings' }"
+          role="tab"
+          @click="activeTab = 'settings'"
+        >
+          设置
+        </button>
       </div>
 
       <StructurePane
@@ -97,9 +107,10 @@ function onConnectionsChanged(list: ConnectionConfig[]) {
         :connections="connections"
       />
       <HistoryPane
-        v-else
+        v-else-if="activeTab === 'history'"
         :connections="connections"
       />
+      <SettingsPane v-else />
     </div>
 
     <ConfirmDialogHost />

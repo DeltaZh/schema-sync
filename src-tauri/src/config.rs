@@ -128,6 +128,7 @@ mod tests {
         let cfg = AppConfig {
             connections: vec![sample_conn("plain-secret")],
             rules: vec![],
+            ..Default::default()
         };
         store.save(cfg).unwrap();
 
@@ -150,6 +151,7 @@ mod tests {
         let cfg = AppConfig {
             connections: vec![sample_conn("secret")],
             rules: vec![],
+            ..Default::default()
         };
         store.save(cfg).unwrap();
         let loaded = store.load().unwrap();
@@ -167,6 +169,7 @@ mod tests {
             .save(AppConfig {
                 connections: vec![sample_conn(&encrypted)],
                 rules: vec![],
+                ..Default::default()
             })
             .unwrap();
         let loaded = store.load().unwrap();
@@ -221,6 +224,7 @@ mod tests {
                 shards: vec!["1".into()],
                 connection_ids: vec!["c1".into()],
             }],
+            ..Default::default()
         };
         store.save(cfg.clone()).unwrap();
         assert_eq!(store.load().unwrap(), cfg);

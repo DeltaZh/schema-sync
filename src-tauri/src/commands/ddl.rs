@@ -98,7 +98,10 @@ pub async fn ddl_preview_core(
     state: &AppState,
     req: &DdlPreviewRequest,
 ) -> Result<DdlPreviewResponse, String> {
-    let validated = ddl_guard::validate_executable_ddl(&req.sql)?;
+    let validated = {
+        let config = state.config.lock().map_err(|e| e.to_string())?;
+        ddl_guard::validate_executable_ddl_with_policy(&req.sql, &config.ddl_policy)?
+    };
     let statement_high_risk: Vec<bool> = validated
         .risks
         .iter()

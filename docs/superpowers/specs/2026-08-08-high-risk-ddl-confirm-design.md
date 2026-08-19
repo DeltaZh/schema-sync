@@ -1,13 +1,15 @@
 # 高风险 DDL 与二次确认
 
-日期：2026-08-08  
-状态：已批准并实现
+日期：2026-08-08（2026-08-19 补充可配置策略）  
+状态：已实现
 
-## 可执行
+## 可执行（默认策略）
 
-- 常规：`ALTER ADD/MODIFY`、`CREATE INDEX`
+- 常规：`CREATE TABLE`、`ALTER ADD/MODIFY/COMMENT`、`CREATE INDEX`
 - 高风险：`INSERT` / `REPLACE`（含 `ON DUPLICATE KEY UPDATE`）、`DROP COLUMN/TABLE/INDEX`、`DELETE`、`UPDATE`、`TRUNCATE`
-- 仍禁止：`DROP DATABASE`
+- 默认不允许：`DROP DATABASE` / `DROP SCHEMA`（可在「设置」改为高风险或常规）
+
+未识别的语句类型仍拒绝。策略存本机 `config.json` 的 `ddl_policy`，仅影响 DDL 投放。
 
 ## 二次确认
 

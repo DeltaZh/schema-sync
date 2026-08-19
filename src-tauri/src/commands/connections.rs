@@ -128,6 +128,7 @@ mod tests {
             *cfg = AppConfig {
                 connections: vec![sample("secret")],
                 rules: vec![],
+                ..Default::default()
             };
             state.store.save(cfg.clone()).unwrap();
             *cfg = state.store.load().unwrap();

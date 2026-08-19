@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ddl_policy::DdlPolicy;
+
 /// 命名规则中可排序的库名部件
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,4 +79,7 @@ pub struct AppConfig {
     pub connections: Vec<ConnectionConfig>,
     #[serde(default)]
     pub rules: Vec<NamingRule>,
+    /// DDL 投放语句策略；缺省为内置默认
+    #[serde(default)]
+    pub ddl_policy: DdlPolicy,
 }

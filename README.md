@@ -103,7 +103,8 @@ open "src-tauri/target/release/bundle/macos/schema-sync.app"
 2. **密码密文落盘**：UI 展示掩码；密钥仅在本机数据目录。  
 3. **执行只认缓存 id**：基准执行用 `scan_id` + `item_ids`；DDL 执行用预览下发的 `preview_id`，客户端无法篡改待执行 SQL。  
 4. **二次确认**：预览后确认；高风险另需输入「确认执行」。  
-5. **勿提交本机数据**：切勿把真实 `config.json` / `.schema-sync.key` / `history.jsonl` 放进 git。
+5. **DDL 投放策略**：默认允许建表与常规结构变更；删库默认禁止。可在「设置」页调整各语句类型为常规 / 高风险 / 不允许。  
+6. **勿提交本机数据**：切勿把真实 `config.json` / `.schema-sync.key` / `history.jsonl` 放进 git。
 
 ---
 
@@ -129,9 +130,13 @@ open "src-tauri/target/release/bundle/macos/schema-sync.app"
 
 ### 模式 2：DDL 投放
 
-1. 选规则（可剔库）→ 粘贴 SQL（`;` 分隔）。  
-2. 预览：校验通过后展示目标与风险。  
+1. 选规则（可剔库）→ 粘贴 SQL（`;` 分隔，支持 `CREATE TABLE` 等）。  
+2. 预览：按「设置」中的策略校验；高风险会标出。  
 3. 确认后按 `preview_id` 串行执行。
+
+### 设置
+
+在「设置」页配置 DDL 投放各语句类型的策略，并可恢复默认。
 
 ---
 

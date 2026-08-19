@@ -325,6 +325,7 @@ mod tests {
         let config = AppConfig {
             connections: vec![conn("c1", true), conn("c2", false)],
             rules: vec![],
+            ..Default::default()
         };
         let (targets, warnings) = expand_targets_enabled(&rule, &config, &[]);
         assert!(targets.iter().all(|t| t.connection_id == "c1"));

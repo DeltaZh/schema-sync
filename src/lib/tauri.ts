@@ -8,6 +8,7 @@ import type {
   DdlExecuteRequest,
   DdlPreviewRequest,
   DdlPreviewResponse,
+  DdlPolicyRow,
   ExecResult,
   ExpandRuleTargetsRequest,
   HistoryRecord,
@@ -149,6 +150,18 @@ export function ddlExecute(req: DdlExecuteRequest): Promise<ExecResult[]> {
 
 export function listHistory(limit?: number): Promise<HistoryRecord[]> {
   return invoke("list_history", { limit: limit ?? null });
+}
+
+export function getDdlPolicy(): Promise<DdlPolicyRow[]> {
+  return invoke("get_ddl_policy");
+}
+
+export function saveDdlPolicy(rows: DdlPolicyRow[]): Promise<DdlPolicyRow[]> {
+  return invoke("save_ddl_policy", { rows });
+}
+
+export function resetDdlPolicy(): Promise<DdlPolicyRow[]> {
+  return invoke("reset_ddl_policy");
 }
 
 /** 生成与后端风格一致的短 id */

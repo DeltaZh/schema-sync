@@ -1,4 +1,6 @@
-//! DDL 投放语句校验：常规结构变更 + 高风险语句（执行时需二次确认）
+//! DDL 投放语句校验：按可配置策略判定常规 / 高风险 / 不允许
+
+use crate::ddl_policy::{DdlPolicy, DdlPolicyLevel, DdlStmtKind};
 
 /// 语句风险：常规 / 高风险（删改数据、删表删字段等）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,9 +200,17 @@ pub fn split_statements(sql: &str) -> Vec<String> {
     out
 }
 
+/// 使用默认策略校验（单测与兼容入口）
+pub fn validate_executable_ddl(sql: &str) -> Result<ValidatedDdl, String> {
+    validate_executable_ddl_with_policy(sql, &DdlPolicy::default())
+}
+
 /// 校验可投放 SQL；通过则返回语句列表与逐条风险。
 /// 会先剥离注释再拆分；返回的语句为去注释后的可执行文本。
-pub fn validate_executable_ddl(sql: &str) -> Result<ValidatedDdl, String> {
+pub fn validate_executable_ddl_with_policy(
+    sql: &str,
+    policy: &DdlPolicy,
+) -> Result<ValidatedDdl, String> {
     let cleaned = strip_sql_comments(sql);
     let statements = split_statements(&cleaned);
     if statements.is_empty() {
@@ -208,7 +218,7 @@ pub fn validate_executable_ddl(sql: &str) -> Result<ValidatedDdl, String> {
     }
     let mut risks = Vec::with_capacity(statements.len());
     for (idx, stmt) in statements.iter().enumerate() {
-        let risk = classify_statement(stmt)
+        let risk = classify_statement(stmt, policy)
             .map_err(|e| format!("第 {} 条语句: {e}", idx + 1))?;
         risks.push(risk);
     }
@@ -220,52 +230,84 @@ pub fn validate_structure_ddl(sql: &str) -> Result<Vec<String>, String> {
     Ok(validate_executable_ddl(sql)?.statements)
 }
 
-fn classify_statement(stmt: &str) -> Result<StmtRisk, String> {
+fn level_to_risk(level: DdlPolicyLevel, kind_label: &str) -> Result<StmtRisk, String> {
+    match level {
+        DdlPolicyLevel::Normal => Ok(StmtRisk::Normal),
+        DdlPolicyLevel::High => Ok(StmtRisk::High),
+        DdlPolicyLevel::Forbidden => Err(format!(
+            "当前策略不允许执行「{kind_label}」，可在「设置」中调整"
+        )),
+    }
+}
+
+fn classify_statement(stmt: &str, policy: &DdlPolicy) -> Result<StmtRisk, String> {
     let trimmed = stmt.trim();
     if trimmed.is_empty() {
         return Err("语句为空".into());
     }
 
-    let upper = strip_quoted_literals(trimmed).to_ascii_uppercase();
+    let kinds = detect_stmt_kinds(trimmed)?;
+    let level = policy.resolve(&kinds);
+    let label = if kinds.len() == 1 {
+        kinds[0].label().to_string()
+    } else {
+        kinds
+            .iter()
+            .map(|k| k.label())
+            .collect::<Vec<_>>()
+            .join(" + ")
+    };
+    level_to_risk(level, &label)
+}
+
+/// 识别语句涉及的策略类型（ALTER 可多条）
+fn detect_stmt_kinds(stmt: &str) -> Result<Vec<DdlStmtKind>, String> {
+    let upper = strip_quoted_literals(stmt).to_ascii_uppercase();
     // 避免列定义 ON UPDATE 干扰；INSERT 的 ON DUPLICATE KEY UPDATE 仍按 INSERT 识别
     let upper_for_head = upper.replace("ON UPDATE", "ON_UPDA_TE");
     let head = upper_for_head.trim_start();
 
     if starts_with_keyword(head, "DROP DATABASE") || starts_with_keyword(head, "DROP SCHEMA") {
-        return Err("不允许 DROP DATABASE / DROP SCHEMA".into());
+        return Ok(vec![DdlStmtKind::DropDatabase]);
     }
-
-    // 数据写入 / 变更类：一律高风险，执行需二次确认
-    if starts_with_keyword(head, "INSERT")
-        || starts_with_keyword(head, "REPLACE")
-        || starts_with_keyword(head, "DELETE")
-        || starts_with_keyword(head, "UPDATE")
-        || starts_with_keyword(head, "TRUNCATE")
-    {
-        return Ok(StmtRisk::High);
+    if starts_with_keyword(head, "INSERT") || starts_with_keyword(head, "REPLACE") {
+        return Ok(vec![DdlStmtKind::InsertReplace]);
+    }
+    if starts_with_keyword(head, "DELETE") {
+        return Ok(vec![DdlStmtKind::Delete]);
+    }
+    if starts_with_keyword(head, "UPDATE") {
+        return Ok(vec![DdlStmtKind::Update]);
+    }
+    if starts_with_keyword(head, "TRUNCATE") {
+        return Ok(vec![DdlStmtKind::Truncate]);
     }
     if starts_with_keyword(head, "DROP TABLE") {
-        return Ok(StmtRisk::High);
+        return Ok(vec![DdlStmtKind::DropTable]);
     }
     if starts_with_keyword(head, "DROP INDEX") {
-        return Ok(StmtRisk::High);
+        return Ok(vec![DdlStmtKind::DropIndex]);
     }
     if starts_with_keyword(head, "CREATE UNIQUE INDEX")
         || starts_with_keyword(head, "CREATE INDEX")
     {
-        return Ok(StmtRisk::Normal);
+        return Ok(vec![DdlStmtKind::CreateIndex]);
+    }
+    if starts_with_keyword(head, "CREATE TABLE") {
+        return Ok(vec![DdlStmtKind::CreateTable]);
     }
     if starts_with_keyword(head, "ALTER TABLE") {
-        return classify_alter_table(trimmed);
+        return detect_alter_kinds(stmt);
     }
 
     Err(
-        "仅允许 ALTER TABLE / CREATE INDEX，以及高风险的 INSERT/REPLACE/DROP/DELETE/UPDATE/TRUNCATE（执行需二次确认）"
+        "未识别的语句类型（当前策略仅覆盖已列出的类型，可在「设置」查看）。\
+         支持：CREATE TABLE / ALTER TABLE / CREATE INDEX，以及 INSERT/REPLACE/DROP/DELETE/UPDATE/TRUNCATE 等"
             .into(),
     )
 }
 
-fn classify_alter_table(stmt: &str) -> Result<StmtRisk, String> {
+fn detect_alter_kinds(stmt: &str) -> Result<Vec<DdlStmtKind>, String> {
     let upper = stmt.to_ascii_uppercase();
     let rest = match strip_leading_keyword(&upper, "ALTER TABLE") {
         Some(r) => r.trim(),
@@ -280,11 +322,14 @@ fn classify_alter_table(stmt: &str) -> Result<StmtRisk, String> {
         return Err("ALTER TABLE 缺少变更子句".into());
     }
 
-    let mut risk = StmtRisk::Normal;
+    let mut kinds = Vec::new();
     for clause in split_alter_clauses(clauses) {
-        match classify_alter_clause(clause.trim()) {
-            Some(StmtRisk::High) => risk = StmtRisk::High,
-            Some(StmtRisk::Normal) => {}
+        match classify_alter_clause_kind(clause.trim()) {
+            Some(k) => {
+                if !kinds.contains(&k) {
+                    kinds.push(k);
+                }
+            }
             None => {
                 return Err(format!(
                     "不支持的 ALTER 子句: {}",
@@ -293,10 +338,10 @@ fn classify_alter_table(stmt: &str) -> Result<StmtRisk, String> {
             }
         }
     }
-    Ok(risk)
+    Ok(kinds)
 }
 
-fn classify_alter_clause(clause: &str) -> Option<StmtRisk> {
+fn classify_alter_clause_kind(clause: &str) -> Option<DdlStmtKind> {
     let upper = clause.trim().to_ascii_uppercase();
     if upper.starts_with("ADD COLUMN ")
         || upper.starts_with("MODIFY COLUMN ")
@@ -305,18 +350,17 @@ fn classify_alter_clause(clause: &str) -> Option<StmtRisk> {
         || upper.starts_with("ADD UNIQUE INDEX ")
         || upper.starts_with("ADD UNIQUE KEY ")
     {
-        return Some(StmtRisk::Normal);
+        return Some(DdlStmtKind::AlterTableSafe);
     }
     if upper.starts_with("DROP COLUMN ")
         || upper.starts_with("DROP INDEX ")
         || upper.starts_with("DROP KEY ")
         || upper.starts_with("DROP PRIMARY KEY")
     {
-        return Some(StmtRisk::High);
+        return Some(DdlStmtKind::AlterTableDrop);
     }
-    // COMMENT 修改
     if upper.starts_with("COMMENT ") || upper == "COMMENT" || upper.starts_with("COMMENT=") {
-        return Some(StmtRisk::Normal);
+        return Some(DdlStmtKind::AlterTableSafe);
     }
     None
 }
@@ -471,6 +515,7 @@ fn split_alter_clauses(clauses: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ddl_policy::{DdlPolicy, DdlPolicyLevel};
 
     #[test]
     fn split_statements_handles_semicolons_and_quotes() {
@@ -564,13 +609,33 @@ ON DUPLICATE KEY UPDATE
     }
 
     #[test]
-    fn drop_database_rejected() {
+    fn drop_database_forbidden_by_default() {
         assert!(validate_executable_ddl("DROP DATABASE foo;").is_err());
     }
 
     #[test]
-    fn create_table_rejected() {
-        assert!(validate_executable_ddl("CREATE TABLE t (id int);").is_err());
+    fn create_table_is_normal_by_default() {
+        let sql = "-- 宝宝档案\nCREATE TABLE IF NOT EXISTS `baby_info` (id int);";
+        let v = validate_executable_ddl(sql).expect("建表应常规放行");
+        assert_eq!(v.statements.len(), 1);
+        assert_eq!(v.risks[0], StmtRisk::Normal);
+    }
+
+    #[test]
+    fn policy_can_forbid_create_table() {
+        let mut policy = DdlPolicy::default();
+        policy.create_table = DdlPolicyLevel::Forbidden;
+        let err = validate_executable_ddl_with_policy("CREATE TABLE t (id int);", &policy)
+            .unwrap_err();
+        assert!(err.contains("不允许") || err.contains("设置"), "{err}");
+    }
+
+    #[test]
+    fn policy_can_allow_drop_database_as_high() {
+        let mut policy = DdlPolicy::default();
+        policy.drop_database = DdlPolicyLevel::High;
+        let v = validate_executable_ddl_with_policy("DROP DATABASE foo;", &policy).unwrap();
+        assert_eq!(v.risks[0], StmtRisk::High);
     }
 
     #[test]

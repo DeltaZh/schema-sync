@@ -80,7 +80,37 @@ export interface TableSelection {
   tableComment: string;
 }
 
-export type MainTab = "structure" | "baseline" | "ddl" | "rules" | "history";
+export type MainTab =
+  | "structure"
+  | "baseline"
+  | "ddl"
+  | "rules"
+  | "history"
+  | "settings";
+
+/** DDL 投放策略档位 */
+export type DdlPolicyLevel = "normal" | "high" | "forbidden";
+
+/** DDL 语句类型（与 Rust snake_case 对齐） */
+export type DdlStmtKind =
+  | "create_table"
+  | "alter_table_safe"
+  | "alter_table_drop"
+  | "create_index"
+  | "drop_table"
+  | "drop_index"
+  | "insert_replace"
+  | "update"
+  | "delete"
+  | "truncate"
+  | "drop_database";
+
+export interface DdlPolicyRow {
+  kind: DdlStmtKind;
+  label: string;
+  hint: string;
+  level: DdlPolicyLevel;
+}
 
 /** 与 Rust `Risk`（snake_case）对齐 */
 export type Risk = "safe" | "caution" | "dangerous";
