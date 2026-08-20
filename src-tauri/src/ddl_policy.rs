@@ -82,8 +82,8 @@ impl DdlStmtKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::CreateTable => "创建表 CREATE TABLE",
-            Self::AlterTableSafe => "修改表（增改列/索引/注释）",
-            Self::AlterTableDrop => "修改表（删除列/索引）",
+            Self::AlterTableSafe => "修改表（非删除类子句）",
+            Self::AlterTableDrop => "修改表（删除列/索引等）",
             Self::CreateIndex => "创建索引 CREATE INDEX",
             Self::DropTable => "删除表 DROP TABLE",
             Self::DropIndex => "删除索引 DROP INDEX",
@@ -98,8 +98,8 @@ impl DdlStmtKind {
     pub fn hint(self) -> &'static str {
         match self {
             Self::CreateTable => "含 IF NOT EXISTS",
-            Self::AlterTableSafe => "ADD/MODIFY COLUMN、ADD INDEX、COMMENT 等",
-            Self::AlterTableDrop => "DROP COLUMN / DROP INDEX / DROP PRIMARY KEY",
+            Self::AlterTableSafe => "除删除类外的任意 ALTER 子句（含 CONVERT、ENGINE、分区等）",
+            Self::AlterTableDrop => "DROP COLUMN/INDEX/KEY/分区、DISCARD/IMPORT TABLESPACE 等",
             Self::CreateIndex => "含 CREATE UNIQUE INDEX",
             Self::DropTable => "整表删除",
             Self::DropIndex => "独立 DROP INDEX 语句",

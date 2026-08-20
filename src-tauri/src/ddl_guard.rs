@@ -296,7 +296,7 @@ fn detect_stmt_kinds(stmt: &str) -> Result<Vec<DdlStmtKind>, String> {
     if starts_with_keyword(head, "CREATE TABLE") {
         return Ok(vec![DdlStmtKind::CreateTable]);
     }
-    if starts_with_keyword(head, "ALTER TABLE") {
+    if is_alter_table_head(head) {
         return detect_alter_kinds(stmt);
     }
 
@@ -307,16 +307,62 @@ fn detect_stmt_kinds(stmt: &str) -> Result<Vec<DdlStmtKind>, String> {
     )
 }
 
+/// `ALTER [ONLINE|OFFLINE] [IGNORE] TABLE …`
+fn is_alter_table_head(head: &str) -> bool {
+    let mut s = head.trim_start();
+    if !starts_with_keyword(s, "ALTER") {
+        return false;
+    }
+    s = s["ALTER".len()..].trim_start();
+    for _ in 0..6 {
+        if starts_with_keyword(s, "ONLINE") {
+            s = s["ONLINE".len()..].trim_start();
+            continue;
+        }
+        if starts_with_keyword(s, "OFFLINE") {
+            s = s["OFFLINE".len()..].trim_start();
+            continue;
+        }
+        if starts_with_keyword(s, "IGNORE") {
+            s = s["IGNORE".len()..].trim_start();
+            continue;
+        }
+        break;
+    }
+    starts_with_keyword(s, "TABLE")
+}
+
 fn detect_alter_kinds(stmt: &str) -> Result<Vec<DdlStmtKind>, String> {
+    // 分类只用大写文本；风险关键字匹配不依赖原始大小写
     let upper = stmt.to_ascii_uppercase();
-    let rest = match strip_leading_keyword(&upper, "ALTER TABLE") {
-        Some(r) => r.trim(),
+    let mut s = upper.trim_start();
+    s = match strip_leading_keyword(s, "ALTER") {
+        Some(r) => r.trim_start(),
         None => return Err("无法解析 ALTER TABLE".into()),
     };
-    if rest.is_empty() {
+    for _ in 0..6 {
+        if let Some(r) = strip_leading_keyword(s, "ONLINE") {
+            s = r.trim_start();
+            continue;
+        }
+        if let Some(r) = strip_leading_keyword(s, "OFFLINE") {
+            s = r.trim_start();
+            continue;
+        }
+        if let Some(r) = strip_leading_keyword(s, "IGNORE") {
+            s = r.trim_start();
+            continue;
+        }
+        break;
+    }
+    s = match strip_leading_keyword(s, "TABLE") {
+        Some(r) => r.trim_start(),
+        None => return Err("无法解析 ALTER TABLE".into()),
+    };
+    if s.is_empty() {
         return Err("ALTER TABLE 缺少表名或子句".into());
     }
-    let (_table, clauses) = split_table_and_clauses(rest)
+    let (_table, clauses) = split_table_and_clauses(s)
         .ok_or_else(|| "无法解析 ALTER TABLE 子句".to_string())?;
     if clauses.is_empty() {
         return Err("ALTER TABLE 缺少变更子句".into());
@@ -324,58 +370,38 @@ fn detect_alter_kinds(stmt: &str) -> Result<Vec<DdlStmtKind>, String> {
 
     let mut kinds = Vec::new();
     for clause in split_alter_clauses(clauses) {
-        match classify_alter_clause_kind(clause.trim()) {
-            Some(k) => {
-                if !kinds.contains(&k) {
-                    kinds.push(k);
-                }
-            }
-            None => {
-                return Err(format!(
-                    "不支持的 ALTER 子句: {}",
-                    truncate_for_err(clause.trim())
-                ));
-            }
+        let k = classify_alter_clause_kind(clause.trim())
+            .ok_or_else(|| format!("ALTER 子句为空"))?;
+        if !kinds.contains(&k) {
+            kinds.push(k);
         }
     }
     Ok(kinds)
 }
 
+/// 未知子句一律视为常规结构变更；仅明确删除类标为 AlterTableDrop。
 fn classify_alter_clause_kind(clause: &str) -> Option<DdlStmtKind> {
     let upper = clause.trim().to_ascii_uppercase();
-    if upper.starts_with("ADD COLUMN ")
-        || upper.starts_with("MODIFY COLUMN ")
-        || upper.starts_with("ADD INDEX ")
-        || upper.starts_with("ADD KEY ")
-        || upper.starts_with("ADD UNIQUE INDEX ")
-        || upper.starts_with("ADD UNIQUE KEY ")
-    {
-        return Some(DdlStmtKind::AlterTableSafe);
+    if upper.is_empty() {
+        return None;
     }
-    if upper.starts_with("DROP COLUMN ")
-        || upper.starts_with("DROP INDEX ")
-        || upper.starts_with("DROP KEY ")
-        || upper.starts_with("DROP PRIMARY KEY")
-    {
+    if is_alter_destructive_clause(&upper) {
         return Some(DdlStmtKind::AlterTableDrop);
     }
-    if upper.starts_with("COMMENT ") || upper == "COMMENT" || upper.starts_with("COMMENT=") {
-        return Some(DdlStmtKind::AlterTableSafe);
-    }
-    None
+    Some(DdlStmtKind::AlterTableSafe)
 }
 
-fn truncate_for_err(s: &str) -> String {
-    const MAX: usize = 48;
-    let mut out = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if i >= MAX {
-            out.push('…');
-            break;
-        }
-        out.push(ch);
-    }
-    out
+fn is_alter_destructive_clause(upper: &str) -> bool {
+    upper.starts_with("DROP COLUMN")
+        || upper.starts_with("DROP INDEX")
+        || upper.starts_with("DROP KEY")
+        || upper.starts_with("DROP PRIMARY KEY")
+        || upper.starts_with("DROP FOREIGN KEY")
+        || upper.starts_with("DROP CHECK")
+        || upper.starts_with("DROP CONSTRAINT")
+        || upper.starts_with("DROP PARTITION")
+        || upper.starts_with("DISCARD TABLESPACE")
+        || upper.starts_with("IMPORT TABLESPACE")
 }
 
 fn starts_with_keyword(haystack: &str, keyword: &str) -> bool {
@@ -680,6 +706,35 @@ ALTER TABLE t ADD COLUMN c int COMMENT '可 INSERT 字样';
     }
 
     #[test]
+    fn alter_change_column_with_drop_add_index_passes() {
+        let sql = r#"
+ALTER TABLE `white_noise`
+    DROP INDEX `idx_white_noise_age_group`,
+    CHANGE COLUMN `age_group_id` `category_id` varchar(64) NOT NULL,
+    ADD INDEX `idx_white_noise_category` (`category_id`);
+"#;
+        let v = validate_executable_ddl(sql).expect("CHANGE COLUMN 应支持");
+        assert_eq!(v.statements.len(), 1);
+        // 含 DROP INDEX → 默认高风险
+        assert_eq!(v.risks[0], StmtRisk::High);
+    }
+
+    #[test]
+    fn alter_change_and_rename_column_are_safe_kinds() {
+        let v = validate_executable_ddl(
+            "ALTER TABLE t CHANGE COLUMN `a` `b` int NOT NULL;",
+        )
+        .unwrap();
+        assert_eq!(v.risks[0], StmtRisk::Normal);
+
+        let v2 = validate_executable_ddl("ALTER TABLE t RENAME COLUMN a TO b;").unwrap();
+        assert_eq!(v2.risks[0], StmtRisk::Normal);
+
+        let v3 = validate_executable_ddl("ALTER TABLE t MODIFY `name` varchar(128) NULL;").unwrap();
+        assert_eq!(v3.risks[0], StmtRisk::Normal);
+    }
+
+    #[test]
     fn add_key_and_unique_forms_pass() {
         assert!(validate_executable_ddl("ALTER TABLE t ADD KEY `k` (`a`);").is_ok());
         assert!(validate_executable_ddl("ALTER TABLE t ADD UNIQUE INDEX `u` (`a`);").is_ok());
@@ -687,20 +742,35 @@ ALTER TABLE t ADD COLUMN c int COMMENT '可 INSERT 字样';
     }
 
     #[test]
-    fn add_constraint_foreign_key_rejected() {
-        let sql = "ALTER TABLE t ADD CONSTRAINT fk_x FOREIGN KEY (a) REFERENCES other(id);";
-        let err = validate_executable_ddl(sql).unwrap_err();
-        assert!(
-            err.contains("不支持") || err.contains("仅允许") || err.contains("不允许"),
-            "unexpected err: {err}"
-        );
+    fn alter_convert_charset_passes_as_normal() {
+        let sql = "ALTER TABLE `white_noise` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;";
+        let v = validate_executable_ddl(sql).expect("CONVERT TO 应放行");
+        assert_eq!(v.risks[0], StmtRisk::Normal);
     }
 
     #[test]
-    fn add_clause_with_index_substring_only_rejected() {
-        let sql = "ALTER TABLE t ADD CONSTRAINT c_idx CHECK (x > 0);";
-        assert!(validate_executable_ddl(sql).is_err());
-        let sql2 = "ALTER TABLE t ADD PRIMARY KEY (id);";
-        assert!(validate_executable_ddl(sql2).is_err());
+    fn alter_engine_auto_increment_and_comment_pass() {
+        let sql = "ALTER TABLE t ENGINE=InnoDB, AUTO_INCREMENT=100, COMMENT='demo';";
+        let v = validate_executable_ddl(sql).unwrap();
+        assert_eq!(v.risks[0], StmtRisk::Normal);
+    }
+
+    #[test]
+    fn alter_ignore_table_supported() {
+        let v = validate_executable_ddl("ALTER IGNORE TABLE t ADD COLUMN c int;").unwrap();
+        assert_eq!(v.risks[0], StmtRisk::Normal);
+    }
+
+    #[test]
+    fn add_constraint_foreign_key_allowed_as_safe() {
+        let sql = "ALTER TABLE t ADD CONSTRAINT fk_x FOREIGN KEY (a) REFERENCES other(id);";
+        let v = validate_executable_ddl(sql).unwrap();
+        assert_eq!(v.risks[0], StmtRisk::Normal);
+    }
+
+    #[test]
+    fn add_primary_key_and_check_allowed() {
+        assert!(validate_executable_ddl("ALTER TABLE t ADD PRIMARY KEY (id);").is_ok());
+        assert!(validate_executable_ddl("ALTER TABLE t ADD CONSTRAINT c_idx CHECK (x > 0);").is_ok());
     }
 }
