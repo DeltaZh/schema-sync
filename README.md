@@ -134,6 +134,8 @@ open "src-tauri/target/release/bundle/macos/schema-sync.app"
 2. 预览：按「设置」中的策略校验；高风险会标出。  
 3. 确认后按 `preview_id` 串行执行。
 
+> **已知问题与修复**：早期对 `ALTER` 子句用白名单，导致 `CHANGE COLUMN`、`CONVERT TO CHARACTER SET` 等合法语法被拒。现已改为「任意 ALTER 子句可投，仅删除类标高风险」。详见 [`docs/superpowers/specs/2026-08-20-alter-table-open-clauses-design.md`](./docs/superpowers/specs/2026-08-20-alter-table-open-clauses-design.md)。
+
 ### 设置
 
 在「设置」页配置 DDL 投放各语句类型的策略，并可恢复默认。
